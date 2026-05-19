@@ -35,6 +35,8 @@ final class TrackingCoordinator {
     // Left pinch timing (short = click, long = right click)
     private var leftPinchStartTime: Date?
     private var leftPinchFired: Bool = false
+    private var rightClickStableFrames: Int = 0
+    private let rightClickStableRequired: Int = 5
 
     // Cache to avoid redundant AppState writes
     private var cachedLeft = false
@@ -641,8 +643,19 @@ final class TrackingCoordinator {
                     // Drag mode — don't fire click, right-hand section handles it
                     leftPinchStartTime = nil
                     leftPinchFired = true
+                    rightClickStableFrames = 0
                     resetLeftGesture()
                 } else if rightPresent {
+                    // Require stable non-pinch frames before starting right-click countdown
+                    // This prevents drag-select from triggering right-click on pinch flicker
+                    rightClickStableFrames += 1
+                    guard rightClickStableFrames >= rightClickStableRequired else {
+                        DispatchQueue.main.async { [weak self] in
+                            self?.appState.trackingState = .pinching
+                        }
+                        return
+                    }
+
                     // Right hand present + left pinch hold = right click
                     if leftPinchStartTime == nil {
                         leftPinchStartTime = Date()
@@ -669,12 +682,14 @@ final class TrackingCoordinator {
                     }
                 } else {
                     // Left pinch only (no right hand) — track for click on release
+                    rightClickStableFrames = 0
                     if leftPinchStartTime == nil {
                         leftPinchStartTime = Date()
                     }
                 }
             } else {
                 // Pinch released — fire click or double-click
+                rightClickStableFrames = 0
                 if let start = leftPinchStartTime, !leftPinchFired {
                     let elapsed = Date().timeIntervalSince(start)
                     if elapsed < 0.5 {
