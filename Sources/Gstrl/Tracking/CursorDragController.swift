@@ -12,10 +12,14 @@ final class CursorDragController {
     private var smoothedPosition: CGPoint?
     private var doubleSmoothed: CGPoint?
     private var previousSmoothed: CGPoint?
-    private let smoothingFactor: CGFloat = 0.55
-    private let secondSmoothing: CGFloat = 0.4
-    private let deadZone: CGFloat = 0.001
-    private let minVelocity: CGFloat = 0.0001
+    private let smoothingFactor: CGFloat = 0.4
+    private let secondSmoothing: CGFloat = 0.3
+    private let deadZone: CGFloat = 0.002
+    private let minVelocity: CGFloat = 0.0002
+
+    private var lastPalmPosition: CGPoint?
+    private var nilFrameCount: Int = 0
+    private let maxNilFrames: Int = 4
 
     private var pathBuffer: [CGPoint] = []
     var onCircleScreenshot: ((_ rect: CGRect) -> Void)?
@@ -51,11 +55,21 @@ final class CursorDragController {
         smoothedPosition = nil
         doubleSmoothed = nil
         previousSmoothed = nil
+        lastPalmPosition = nil
+        nilFrameCount = 0
         if wasActive { onCursorEnd?() }
     }
 
     func process(_ obs: VNHumanHandPoseObservation, holdingClick: Bool) {
-        guard let palmCenter = palmPosition(obs) else { return }
+        guard let palmCenter = palmPosition(obs) else {
+            nilFrameCount += 1
+            if nilFrameCount > maxNilFrames {
+                lastPalmPosition = nil
+            }
+            return
+        }
+        nilFrameCount = 0
+        lastPalmPosition = palmCenter
 
         let current = palmCenter
         if anchor == nil {
@@ -97,8 +111,9 @@ final class CursorDragController {
                 return
             }
 
-            let deltaX = -(final.x - anc.x) * totalBounds.width * sensitivity
-            let deltaY = -(final.y - anc.y) * totalBounds.height * sensitivity
+            let displayBounds = currentDisplayBounds(for: curAnc)
+            let deltaX = -(final.x - anc.x) * displayBounds.width * sensitivity
+            let deltaY = -(final.y - anc.y) * displayBounds.height * sensitivity
             let newX = max(totalBounds.minX, min(totalBounds.maxX, curAnc.x + deltaX))
             let newY = max(totalBounds.minY, min(totalBounds.maxY, curAnc.y + deltaY))
             let pos = CGPoint(x: newX, y: newY)
@@ -137,8 +152,35 @@ final class CursorDragController {
                 count += 1
             }
         }
-        guard count >= 2 else { return nil }
-        return CGPoint(x: sumX / count, y: sumY / count)
+        if count >= 2 {
+            let pos = CGPoint(x: sumX / count, y: sumY / count)
+            // Reject if position jumped too far from last known (noise spike)
+            if let last = lastPalmPosition {
+                let jump = hypot(pos.x - last.x, pos.y - last.y)
+                if jump > 0.15 { return lastPalmPosition }
+            }
+            return pos
+        }
+        // Fallback: use wrist if MCPs aren't visible
+        if let wrist = try? obs.recognizedPoint(.wrist), wrist.confidence > 0.3 {
+            return CGPoint(x: wrist.location.x, y: wrist.location.y)
+        }
+        return lastPalmPosition
+    }
+
+    private func currentDisplayBounds(for point: CGPoint) -> CGRect {
+        var displayCount: UInt32 = 0
+        CGGetActiveDisplayList(0, nil, &displayCount)
+        guard displayCount > 0 else { return totalBounds }
+        var displays = [CGDirectDisplayID](repeating: 0, count: Int(displayCount))
+        CGGetActiveDisplayList(displayCount, &displays, &displayCount)
+        for display in displays {
+            let bounds = CGDisplayBounds(display)
+            if bounds.contains(point) {
+                return bounds
+            }
+        }
+        return CGDisplayBounds(CGMainDisplayID())
     }
 
     private func detectCircleRegion() -> CGRect? {
