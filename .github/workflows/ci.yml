@@ -1,0 +1,238 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: "macOS runner label"
+        required: false
+        default: macos-26
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+permissions:
+  contents: read
+
+env:
+  APP_NAME: Scrollpage
+  ARTIFACT_RETENTION_DAYS: 14
+
+jobs:
+  build:
+    name: Build & test
+    runs-on: ${{ inputs.runner || 'macos-26' }}
+    timeout-minutes: 45
+    outputs:
+      app_built: ${{ steps.package.outputs.app_built }}
+      artifact_name: ${{ steps.package.outputs.artifact_name }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Detect project layout
+        id: detect
+        run: |
+          if [[ ! -f Package.swift ]]; then
+            echo "has_package=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=CI skipped::No Package.swift at repo root yet; nothing to build."
+            echo "### CI skipped: no \`Package.swift\` at repo root" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "has_package=true" >> "$GITHUB_OUTPUT"
+          if [[ -f Makefile ]] && grep -qE '^build:' Makefile; then
+            echo "has_make_build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_make_build=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Select newest stable Xcode
+        if: steps.detect.outputs.has_package == 'true'
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Toolchain info
+        if: steps.detect.outputs.has_package == 'true'
+        id: toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+          sw_vers
+          echo "xcode=$(xcodebuild -version | head -1 | tr -cd '[:alnum:].')" >> "$GITHUB_OUTPUT"
+          tests="$(swift package dump-package | jq '[.targets[] | select(.type == "test")] | length')"
+          if [[ "$tests" -gt 0 ]]; then
+            echo "has_tests=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_tests=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=No tests::Package.swift declares no test targets; skipping swift test."
+          fi
+
+      - name: Cache SwiftPM build
+        if: steps.detect.outputs.has_package == 'true'
+        uses: actions/cache@v6
+        with:
+          path: .build
+          key: spm-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.xcode }}-${{ hashFiles('Package.swift', 'Package.resolved') }}
+          restore-keys: |
+            spm-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.xcode }}-
+
+      - name: swift build
+        if: steps.detect.outputs.has_package == 'true'
+        run: |
+          if [[ "${{ steps.toolchain.outputs.has_tests }}" == "true" ]]; then
+            swift build --build-tests
+          else
+            swift build
+          fi
+
+      - name: swift test
+        if: steps.toolchain.outputs.has_tests == 'true'
+        run: |
+          set -o pipefail
+          mkdir -p build/test-results
+          swift test --parallel --xunit-output build/test-results/xunit.xml 2>&1 | tee build/test-results/swift-test.log
+
+      - name: Test summary
+        if: always() && steps.toolchain.outputs.has_tests == 'true'
+        shell: python3 {0}
+        run: |
+          import glob, os, xml.etree.ElementTree as ET
+          total = failures = errors = skipped = 0
+          failed = []
+          for path in sorted(glob.glob("build/test-results/*.xml")):
+              root = ET.parse(path).getroot()
+              for case in root.iter("testcase"):
+                  total += 1
+                  name = f"{case.get('classname', '')}.{case.get('name', '')}"
+                  if case.find("failure") is not None:
+                      failures += 1
+                      failed.append(name)
+                  elif case.find("error") is not None:
+                      errors += 1
+                      failed.append(name)
+                  elif case.find("skipped") is not None:
+                      skipped += 1
+          passed = total - failures - errors - skipped
+          icon = "✅" if total and not failed else ("❌" if failed else "⚠️")
+          lines = [f"### {icon} Tests: {passed} passed, {len(failed)} failed, {skipped} skipped ({total} total)"]
+          if not total:
+              lines.append("No xunit results were produced; see the `swift test` step log.")
+          if failed:
+              lines.append("")
+              lines.append("| Failed test |")
+              lines.append("| --- |")
+              lines += [f"| `{n}` |" for n in failed[:100]]
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("\n".join(lines) + "\n")
+          for n in failed[:50]:
+              print(f"::error title=Test failed::{n}")
+
+      - name: Upload test results
+        if: always() && steps.toolchain.outputs.has_tests == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/test-results/
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+          if-no-files-found: ignore
+
+      - name: Build app bundle
+        if: steps.detect.outputs.has_package == 'true'
+        run: |
+          if [[ "${{ steps.detect.outputs.has_make_build }}" == "true" ]]; then
+            echo "Using: make build"
+            make build
+          else
+            echo "No 'build' target in Makefile; using scripts/ci-bundle-app.sh"
+            if [[ -x scripts/ci-bundle-app.sh ]]; then
+              scripts/ci-bundle-app.sh
+            else
+              bash scripts/ci-bundle-app.sh
+            fi
+          fi
+
+      - name: Package app
+        if: steps.detect.outputs.has_package == 'true'
+        id: package
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          app=""
+          for candidate in "build/$APP_NAME.app" build/*.app ./*.app .build/*/release/*.app; do
+            if [[ -d "$candidate" ]]; then
+              app="$candidate"
+              break
+            fi
+          done
+          if [[ -z "$app" ]]; then
+            echo "::error title=No app bundle::Build finished but no .app bundle was found (looked in build/ and repo root)."
+            exit 1
+          fi
+          echo "Found $app"
+          if ! codesign --verify --deep --strict "$app" 2>/dev/null; then
+            echo "::warning title=Unsigned bundle::$app was not validly signed; applying an ad-hoc signature."
+            codesign --force --deep --sign - "$app"
+          fi
+          codesign -dv --verbose=2 "$app" 2>&1 | grep -E '^(Identifier|Signature|TeamIdentifier)=' || true
+          name="$(basename "$app" .app)"
+          short="${HEAD_SHA:0:7}"
+          artifact="$name-$short"
+          mkdir -p dist
+          ditto -c -k --keepParent "$app" "dist/$artifact.zip"
+          echo "app_built=true" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=$artifact" >> "$GITHUB_OUTPUT"
+          bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist" 2>/dev/null || echo '?')"
+          size="$(du -h "dist/$artifact.zip" | cut -f1)"
+          {
+            echo "### 📦 $name.app"
+            echo ""
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Artifact | \`$artifact\` ($size) |"
+            echo "| Bundle ID | \`$bundle_id\` |"
+            echo "| Commit | \`$HEAD_SHA\` |"
+            echo ""
+            echo "Install locally: \`scripts/install-latest.sh --run-id $GITHUB_RUN_ID\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload app artifact
+        if: steps.package.outputs.app_built == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.package.outputs.artifact_name }}
+          path: dist/${{ steps.package.outputs.artifact_name }}.zip
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+          if-no-files-found: error
+
+  release:
+    name: GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v') && needs.build.outputs.app_built == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: dist
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          ls -la dist
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.zip --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            prerelease=()
+            [[ "$TAG" == *-* ]] && prerelease=(--prerelease)
+            gh release create "$TAG" dist/*.zip --repo "$GITHUB_REPOSITORY" \
+              --title "$TAG" --generate-notes --verify-tag "${prerelease[@]}"
+          fi
