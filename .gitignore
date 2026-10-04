@@ -29,3 +29,6 @@ __pycache__/
 # Temp
 *.log
 .drafts/
+
+# Scrollpage app bundle
+build/

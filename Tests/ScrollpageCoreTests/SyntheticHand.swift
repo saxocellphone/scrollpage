@@ -46,13 +46,13 @@ struct SyntheticHand {
     mutating func sample(_ pose: HandPose) -> HandSample {
         let s = pose.size
         let p = pose.palm
-        var joints: [Joint: Vec2] = [:]
+        var joints: [HandJoint: Vec2] = [:]
 
-        let mcps: [(Joint, Double)] = [(.indexMCP, -0.3), (.middleMCP, -0.1), (.ringMCP, 0.1), (.littleMCP, 0.3)]
+        let mcps: [(HandJoint, Double)] = [(.indexMCP, -0.3), (.middleMCP, -0.1), (.ringMCP, 0.1), (.littleMCP, 0.3)]
         for (j, dx) in mcps { joints[j] = p + Vec2(dx * s, 0) }
         joints[.wrist] = joints[.middleMCP]! + Vec2(0, s)
 
-        func finger(_ mcp: Joint, _ pip: Joint, _ dip: Joint, _ tip: Joint, open: Bool) {
+        func finger(_ mcp: HandJoint, _ pip: HandJoint, _ dip: HandJoint, _ tip: HandJoint, open: Bool) {
             let base = joints[mcp]!
             if open {
                 joints[pip] = base + Vec2(0, -0.45 * s)
@@ -84,7 +84,7 @@ struct SyntheticHand {
         joints[.thumbIP] = wrist + Vec2(-0.75 * s, -0.70 * s)
         joints[.thumbTip] = joints[.indexTip]! + Vec2(-pose.pinchRatio * s, 0)
 
-        var points: [Joint: JointPoint] = [:]
+        var points: [HandJoint: JointPoint] = [:]
         for (j, v) in joints {
             points[j] = JointPoint(v + Vec2(noise.gaussian(sigma), noise.gaussian(sigma)), confidence: 0.9)
         }

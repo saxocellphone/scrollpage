@@ -1,6 +1,6 @@
 import Foundation
 
-public enum Joint: Int, CaseIterable, Sendable {
+public enum HandJoint: Int, CaseIterable, Sendable {
     case wrist
     case thumbCMC, thumbMP, thumbIP, thumbTip
     case indexMCP, indexPIP, indexDIP, indexTip
@@ -29,23 +29,23 @@ public struct HandSample: Equatable, Sendable {
 
     private var points: [JointPoint?]
 
-    public init(_ joints: [Joint: JointPoint]) {
-        points = Array(repeating: nil, count: Joint.allCases.count)
+    public init(_ joints: [HandJoint: JointPoint]) {
+        points = Array(repeating: nil, count: HandJoint.allCases.count)
         for (joint, point) in joints { points[joint.rawValue] = point }
     }
 
-    public subscript(_ joint: Joint) -> JointPoint? {
+    public subscript(_ joint: HandJoint) -> JointPoint? {
         get { points[joint.rawValue] }
         set { points[joint.rawValue] = newValue }
     }
 
-    public func location(_ joint: Joint, minConfidence: Double = HandSample.minConfidence) -> Vec2? {
+    public func location(_ joint: HandJoint, minConfidence: Double = HandSample.minConfidence) -> Vec2? {
         guard let p = points[joint.rawValue], p.confidence >= minConfidence else { return nil }
         return p.location
     }
 
-    public var allLocations: [(Joint, JointPoint)] {
-        Joint.allCases.compactMap { j in points[j.rawValue].map { (j, $0) } }
+    public var allLocations: [(HandJoint, JointPoint)] {
+        HandJoint.allCases.compactMap { j in points[j.rawValue].map { (j, $0) } }
     }
 
     /// Wrist to middle-finger knuckle: a scale reference that stays put while the
@@ -67,7 +67,7 @@ public struct HandSample: Equatable, Sendable {
     /// close or open, which makes it the right point to drive the pointer during
     /// a pinch (the approach Gstrl uses).
     public var palmCenter: Vec2? {
-        let knuckles: [Joint] = [.indexMCP, .middleMCP, .ringMCP, .littleMCP]
+        let knuckles: [HandJoint] = [.indexMCP, .middleMCP, .ringMCP, .littleMCP]
         let found = knuckles.compactMap { location($0) }
         guard found.count >= 2 else { return nil }
         return found.reduce(Vec2.zero, +) / Double(found.count)
@@ -83,13 +83,13 @@ public struct HandSample: Equatable, Sendable {
 
     /// A finger counts as extended when its tip is clearly farther from the wrist
     /// than its middle joint. This works for any hand orientation.
-    public func isExtended(tip: Joint, pip: Joint) -> Bool? {
+    public func isExtended(tip: HandJoint, pip: HandJoint) -> Bool? {
         guard let w = location(.wrist), let t = location(tip), let p = location(pip) else { return nil }
         return w.distance(to: t) > w.distance(to: p) * 1.12
     }
 
     public var extendedFingerCount: Int {
-        let fingers: [(Joint, Joint)] = [
+        let fingers: [(HandJoint, HandJoint)] = [
             (.indexTip, .indexPIP), (.middleTip, .middlePIP),
             (.ringTip, .ringPIP), (.littleTip, .littlePIP),
         ]
