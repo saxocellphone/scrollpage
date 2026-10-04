@@ -11,11 +11,15 @@ enum Diagnostics {
     static func run(arguments: [String]) -> Never {
         var seconds = 10.0
         var recordPath: String?
+        var replayPath: String?
         var i = 0
         while i < arguments.count {
             let a = arguments[i]
             if a == "--record", i + 1 < arguments.count {
                 recordPath = arguments[i + 1]
+                i += 1
+            } else if a == "--replay", i + 1 < arguments.count {
+                replayPath = arguments[i + 1]
                 i += 1
             } else if let s = Double(a) {
                 seconds = s
@@ -24,6 +28,7 @@ enum Diagnostics {
         }
 
         setvbuf(stdout, nil, _IOLBF, 0)
+        if let replayPath { replay(replayPath) }
         print("Scrollpage diagnostics (\(Int(seconds)) s). Hold a hand up and keep it still for a few")
         print("seconds (drift), then try pinch-move, quick pinches and open-hand flicks.\n")
 
@@ -48,8 +53,50 @@ enum Diagnostics {
         exit(2)
     }
 
+    /// The user's saved settings, so diagnostics measure what the app would do.
+    private static var savedSettings: MotionSettings {
+        let d = UserDefaults.standard
+        var s = MotionSettings()
+        if d.object(forKey: "trackingSpeed") != nil { s.trackingSpeed = d.double(forKey: "trackingSpeed") }
+        if d.object(forKey: "scrollingSpeed") != nil { s.scrollingSpeed = d.double(forKey: "scrollingSpeed") }
+        s.naturalScrolling = d.object(forKey: "naturalScrolling") != nil ? d.bool(forKey: "naturalScrolling") : Permissions.systemNaturalScrolling
+        s.screenWidth = Double(CGDisplayBounds(CGMainDisplayID()).width)
+        return s
+    }
+
+    /// Runs the gesture engine over a recording made with `--record`.
+    private static func replay(_ path: String) -> Never {
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else {
+            print("Can't read \(path)")
+            exit(1)
+        }
+        let engine = GestureEngine(settings: savedSettings)
+        let collector = Collector(recordPath: nil)
+        var previousPalm: Vec2?
+        for line in text.split(separator: "\n") {
+            guard let data = line.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let t = object["t"] as? Double else { continue }
+            var hand: HandSample?
+            if let joints = object["joints"] as? [[Double]] {
+                var points: [HandJoint: JointPoint] = [:]
+                for (j, p) in zip(HandJoint.allCases, joints) where p.count == 3 {
+                    points[j] = JointPoint(Vec2(p[0], p[1]), confidence: p[2])
+                }
+                hand = HandSelector.select([HandSample(points)], previousPalm: previousPalm)
+            }
+            previousPalm = hand?.palmCenter
+            let outputs = engine.process(hand, at: t)
+            collector.add(FrameReport(time: t, hand: hand, outputs: outputs, snapshot: engine.snapshot, stats: PipelineStats()))
+        }
+        print("Replayed \(path)")
+        collector.printReport(timing: false)
+        exit(0)
+    }
+
     private static func start(seconds: Double, recordPath: String?) {
         let pipeline = CameraPipeline()
+        pipeline.updateSettings(savedSettings)
         let collector = Collector(recordPath: recordPath)
         pipeline.onFrame = { collector.add($0) }
         pipeline.start(deviceID: nil) { result in
@@ -85,6 +132,8 @@ enum Diagnostics {
         private var stillDrift = 0.0
         private var stillTime = 0.0
         private var previousStillTime: Double?
+        /// Palm positions (hand units) over the last 0.5 s, to find still stretches.
+        private var recent: [(t: Double, p: Vec2)] = []
         private var counts: [String: Int] = [:]
         private var travel = 0.0
         private let recorder: FileHandle?
@@ -121,7 +170,10 @@ enum Diagnostics {
                 handFrames += 1
                 handSizes.append(size)
                 if let ratio = r.snapshot.pinchRatio { pinchRatios.append(ratio) }
-                let still = r.snapshot.speed < 0.25
+                recent.append((r.time, palm / size))
+                while let first = recent.first, r.time - first.t > 0.5 { recent.removeFirst() }
+                let still = r.time - (recent.first?.t ?? r.time) > 0.4
+                    && recent.allSatisfy { $0.p.distance(to: palm / size) < 0.1 }
                 if still, let prev = previousPalm {
                     stillJitter.append(palm.distance(to: prev.p) / size)
                 }
@@ -134,6 +186,7 @@ enum Diagnostics {
             } else {
                 previousPalm = nil
                 previousStillTime = nil
+                recent.removeAll()
             }
 
             record(r)
@@ -157,7 +210,7 @@ enum Diagnostics {
             }
         }
 
-        func printReport() {
+        func printReport(timing: Bool = true) {
             let duration = max(1e-6, lastTime - (firstTime ?? lastTime))
             func pct(_ values: [Double], _ p: Double) -> Double {
                 guard !values.isEmpty else { return .nan }
@@ -169,8 +222,10 @@ enum Diagnostics {
 
             print("")
             print("Frames            \(frames) in \(f(duration)) s = \(f(Double(frames) / duration)) fps")
-            print("Processing        mean \(f(mean(processing))) ms, p95 \(f(pct(processing, 0.95))) ms (Vision + engine)")
-            print("Capture→gesture   mean \(f(mean(latency))) ms, p95 \(f(pct(latency, 0.95))) ms")
+            if timing {
+                print("Processing        mean \(f(mean(processing))) ms, p95 \(f(pct(processing, 0.95))) ms (Vision + engine)")
+                print("Capture→gesture   mean \(f(mean(latency))) ms, p95 \(f(pct(latency, 0.95))) ms")
+            }
             print("Hand detected     \(f(100 * Double(handFrames) / Double(max(1, frames)), 0)) % of frames")
             print("Hand size         mean \(f(mean(handSizes), 3)) image heights")
             print("Pinch ratio       min \(f(pct(pinchRatios, 0), 2)), median \(f(pct(pinchRatios, 0.5), 2)), max \(f(pct(pinchRatios, 1), 2))  (engage < 0.22, release > 0.38)")

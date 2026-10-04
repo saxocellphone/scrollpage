@@ -37,10 +37,13 @@ struct HandPose {
 struct SyntheticHand {
     var noise: NoiseSource
     var sigma: Double
+    /// Jitter shared by every joint in a frame, as real trackers shift the whole hand.
+    var commonSigma: Double
 
-    init(seed: UInt64 = 42, sigma: Double = 0.0015) {
+    init(seed: UInt64 = 42, sigma: Double = 0.0015, commonSigma: Double = 0) {
         noise = NoiseSource(seed: seed)
         self.sigma = sigma
+        self.commonSigma = commonSigma
     }
 
     mutating func sample(_ pose: HandPose) -> HandSample {
@@ -85,8 +88,9 @@ struct SyntheticHand {
         joints[.thumbTip] = joints[.indexTip]! + Vec2(-pose.pinchRatio * s, 0)
 
         var points: [HandJoint: JointPoint] = [:]
-        for (j, v) in joints {
-            points[j] = JointPoint(v + Vec2(noise.gaussian(sigma), noise.gaussian(sigma)), confidence: 0.9)
+        let shift = Vec2(noise.gaussian(commonSigma), noise.gaussian(commonSigma))
+        for (j, v) in joints.sorted(by: { $0.key.rawValue < $1.key.rawValue }) {
+            points[j] = JointPoint(v + shift + Vec2(noise.gaussian(sigma), noise.gaussian(sigma)), confidence: 0.9)
         }
         return HandSample(points)
     }
@@ -98,12 +102,22 @@ final class Rig {
     var hand: SyntheticHand
     var pose = HandPose()
     var t = 100.0
-    let dt = 1.0 / 60
+    let dt: Double
     private(set) var outputs: [(t: Double, output: GestureOutput)] = []
 
-    init(settings: MotionSettings = MotionSettings(), seed: UInt64 = 42, sigma: Double = 0.0015) {
+    init(settings: MotionSettings = MotionSettings(), seed: UInt64 = 42, sigma: Double = 0.0015,
+         commonSigma: Double = 0, fps: Double = 60) {
         engine = GestureEngine(settings: settings)
-        hand = SyntheticHand(seed: seed, sigma: sigma)
+        hand = SyntheticHand(seed: seed, sigma: sigma, commonSigma: commonSigma)
+        dt = 1 / fps
+    }
+
+    /// Noise and frame rate measured on a USB webcam (25 fps, hand ~0.12 image
+    /// heights, palm jitter ~15 thousandths of a hand per frame).
+    static func webcam(seed: UInt64 = 42) -> Rig {
+        let rig = Rig(seed: seed, sigma: 0.0015, commonSigma: 0.0009, fps: 25)
+        rig.pose.size = 0.12
+        return rig
     }
 
     /// Runs for `duration` seconds. `update` gets progress 0...1 and may change the pose.

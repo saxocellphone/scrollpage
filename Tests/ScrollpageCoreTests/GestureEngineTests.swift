@@ -71,6 +71,59 @@ final class GestureEnginePointerTests: XCTestCase {
     }
 }
 
+/// The same behaviours at the noise level and frame rate of a real USB webcam.
+final class GestureEngineWebcamTests: XCTestCase {
+    func testStillPinchedHandDoesNotDrift() {
+        for seed in UInt64(1)...5 {
+            let rig = Rig.webcam(seed: seed)
+            let u = rig.pose.size
+            rig.hold(0.5)
+            rig.pinch(true, over: 0.08)
+            rig.move(by: Vec2(0.5 * u, 0.2 * u), over: 0.5)
+            rig.hold(1.0)
+            let start = rig.t
+            rig.hold(4.0)
+            let drift = rig.pointerTravel(since: start).path / 4.0
+            XCTAssertLessThan(drift, 1.0, "seed \(seed): drift \(drift) pt/s")
+        }
+    }
+
+    func testSlowDeliberateMoveStillMoves() {
+        let rig = Rig.webcam()
+        let u = rig.pose.size
+        rig.hold(0.5)
+        rig.pinch(true, over: 0.08)
+        rig.move(by: Vec2(0.3 * u, 0), over: 1.5)
+        rig.hold(0.3)
+        let net = rig.pointerTravel().net.x
+        XCTAssertGreaterThan(net, 15, "0.3 hu slow move went \(net) pt")
+        XCTAssertLessThan(net, 0.3 * 165 * 1.6)
+    }
+
+    func testTapClicksWithoutMoving() {
+        for seed in UInt64(1)...5 {
+            let rig = Rig.webcam(seed: seed)
+            rig.hold(0.5)
+            rig.pinch(true, over: 0.08)
+            rig.hold(0.08)
+            rig.pinch(false, over: 0.08)
+            rig.hold(0.5)
+            XCTAssertEqual(rig.clicks, [1], "seed \(seed)")
+            XCTAssertEqual(rig.pointerTravel().path, 0, "seed \(seed)")
+        }
+    }
+
+    func testFlickAndNoFalseFlicksWhileHolding() {
+        let rig = Rig.webcam()
+        let u = rig.pose.size
+        rig.hold(3.0)
+        XCTAssertTrue(rig.flings.isEmpty)
+        rig.move(by: Vec2(0, -0.6 * u), over: 0.12)
+        rig.hold(0.5)
+        XCTAssertEqual(rig.flings.count, 1)
+    }
+}
+
 final class GestureEngineClickTests: XCTestCase {
     private func tap(_ rig: Rig) {
         rig.pinch(true)
@@ -155,6 +208,24 @@ final class GestureEngineClickTests: XCTestCase {
         XCTAssertTrue(rig.clicks.isEmpty)
         XCTAssertEqual(rig.count(.touchEnded), 1)
         XCTAssertFalse(rig.engine.snapshot.isTouching)
+    }
+
+    func testHandArrivingAlreadyPinchedDoesNotTouchUntilItOpens() {
+        let rig = Rig()
+        rig.pose.pinchRatio = 0.1
+        rig.pose.fingersOpen = false
+        rig.run(0.3, visible: false)
+        rig.hold(0.6)
+        rig.move(by: Vec2(0.5 * hu, 0), over: 0.4)
+        XCTAssertEqual(rig.count(.touchBegan), 0)
+        XCTAssertEqual(rig.pointerTravel().path, 0)
+        rig.pinch(false)
+        rig.hold(0.2)
+        rig.pinch(true)
+        rig.hold(0.05)
+        rig.pinch(false)
+        XCTAssertEqual(rig.count(.touchBegan), 1)
+        XCTAssertEqual(rig.clicks, [1])
     }
 
     func testShortTrackingGapIsBridged() {

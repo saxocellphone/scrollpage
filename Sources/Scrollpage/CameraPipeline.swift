@@ -78,7 +78,11 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     func start(deviceID: String?, completion: @escaping (Result<AVCaptureDevice, Error>) -> Void) {
         sessionQueue.async {
             let result = Result { try self.configure(deviceID: deviceID) }
-            if case .success = result, !self.session.isRunning { self.session.startRunning() }
+            if case .success(let device) = result, !self.session.isRunning {
+                self.session.startRunning()
+                // Starting re-applies the session preset, replacing the chosen format.
+                Self.chooseFormat(for: device)
+            }
             DispatchQueue.main.async { completion(result) }
         }
     }
@@ -104,40 +108,46 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         if input?.device.uniqueID == device.uniqueID { return device }
 
         session.beginConfiguration()
-        defer { session.commitConfiguration() }
         if let old = input {
             session.removeInput(old)
             input = nil
         }
-        let newInput = try AVCaptureDeviceInput(device: device)
-        guard session.canAddInput(newInput) else { throw PipelineError.cannotUse(device.localizedName) }
-        session.addInput(newInput)
-        input = newInput
-
+        do {
+            let newInput = try AVCaptureDeviceInput(device: device)
+            guard session.canAddInput(newInput) else { throw PipelineError.cannotUse(device.localizedName) }
+            session.addInput(newInput)
+            input = newInput
+        } catch {
+            session.commitConfiguration()
+            throw error
+        }
         if !session.outputs.contains(output) {
             output.alwaysDiscardsLateVideoFrames = true
             output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarFullRange]
             output.setSampleBufferDelegate(self, queue: videoQueue)
             if session.canAddOutput(output) { session.addOutput(output) }
         }
+        session.commitConfiguration()
+        // The session preset is applied on commit, so the format must be chosen after it.
         Self.chooseFormat(for: device)
         return device
     }
 
-    /// Prefers 60 fps at a width near 960 (640...1280). Vision downsamples
-    /// internally, so frame rate matters far more than resolution.
+    /// Prefers the highest frame rate (up to 60 fps), then the most pixels up to
+    /// 1920 wide: frame rate drives latency and smoothness, and resolution keeps
+    /// a hand far from the camera trackable. Vision costs ~10 ms even at 1080p.
     private static func chooseFormat(for device: AVCaptureDevice) {
         struct Candidate { let format: AVCaptureDevice.Format; let rate: Double; let width: Int32 }
         let candidates = device.formats.compactMap { f -> Candidate? in
             let d = CMVideoFormatDescriptionGetDimensions(f.formatDescription)
-            guard (640...1280).contains(d.width) else { return nil }
+            guard (640...1920).contains(d.width), d.width >= d.height else { return nil }
             let rate = f.videoSupportedFrameRateRanges.map(\.maxFrameRate).max() ?? 0
             return Candidate(format: f, rate: rate, width: d.width)
         }
         guard let best = candidates.max(by: { a, b in
-            let ra = min(a.rate, 60), rb = min(b.rate, 60)
+            let ra = min(a.rate.rounded(), 60), rb = min(b.rate.rounded(), 60)
             if ra != rb { return ra < rb }
-            return abs(a.width - 960) > abs(b.width - 960)
+            return a.width < b.width
         }) else { return }
 
         do {

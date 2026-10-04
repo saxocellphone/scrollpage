@@ -111,6 +111,9 @@ public final class GestureEngine {
     private var lastRelease = -Double.infinity
     private var lastClick: (t: Double, count: Int)?
     private var movedSinceClick = false
+    /// A touch only begins after the fingers have been seen apart, so a hand
+    /// that arrives already closed (or a fist read as a pinch) never grabs the pointer.
+    private var pinchArmed = false
 
     public init(settings: MotionSettings = MotionSettings(), timing: GestureTiming = GestureTiming()) {
         self.settings = settings
@@ -156,8 +159,10 @@ public final class GestureEngine {
         let ratio = hand.pinchRatio(handSize: size)
         let wasPinching = pinch.isPinching
         let pinching = pinch.update(ratio)
+        if let ratio, ratio > pinch.releaseRatio { pinchArmed = true }
 
-        if pinching && !wasPinching {
+        if pinching && !wasPinching && pinchArmed {
+            pinchArmed = false
             touch = Touch(start: t, origin: filtered)
             flick.reset()
             out.append(.touchBegan)
@@ -177,7 +182,7 @@ public final class GestureEngine {
                 out.append(.pointerMoved(dx: pointerDelta.x, dy: pointerDelta.y))
             }
             touch = current
-        } else if !pinching {
+        } else if !pinching && touch == nil {
             let mayFlick = t - lastRelease >= timing.flickAfterRelease
                 && t - (trackedSince ?? t) >= timing.flickAfterAcquire
             if let f = flick.update(position: virtual, at: t, canStart: mayFlick && hand.isOpenHand) {
@@ -235,6 +240,7 @@ public final class GestureEngine {
     private func loseHand(at t: Double, _ out: inout [GestureOutput]) {
         endTouch(at: t, allowClick: false, &out)
         pinch.reset()
+        pinchArmed = false
         flick.reset()
         filter.reset()
         history.removeAll()
