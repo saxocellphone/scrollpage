@@ -16,13 +16,14 @@ alone in the frame.
 
 | Do this | Get this |
 | --- | --- |
-| Touch thumb and index tips together and move | Move the pointer (one finger on the pad). Slow is precise, fast crosses the screen. |
-| Quick touch without moving | Click. Two quick touches double-click, three triple-click. |
+| Make an **OK sign** (thumb and index tips touching, middle, ring and little fingers extended) and move | Move the pointer (one finger on the pad). Slow is precise, fast crosses the screen. |
+| Hold the OK sign and turn your hand at the wrist | Move the pointer too: turn right/left goes right/left, tipping the knuckles up/down goes up/down. |
+| Quick OK-sign touch without moving | Click. Two quick touches double-click, three triple-click. |
 | Touch, hold still ~0.6 s, then move | Drag (mouse button held until you let go). |
-| Touch thumb, index **and middle** tips together and move | Scroll (two fingers on the pad): the page follows your hand, any direction. Let go while moving and it glides. |
+| Touch thumb, index **and middle** tips together (ring and little extended) and move | Scroll (two fingers on the pad): the page follows your hand, any direction. Let go while moving and it glides. |
 | Flick an open hand up/down/left/right | Momentum scroll, like a two-finger fling. |
 | Touch while the page glides | Catch the glide (stops it at once). |
-| Fingers apart, open hand, or hand out of view | Fingers lifted: nothing moves. |
+| Fingers apart, open hand, fist, half-closed hand, or hand out of view | Fingers lifted: nothing moves. |
 | Raise a palm, all five fingers spread, hold still ~1 s | Turn gestures off, or back on. |
 
 The pointer is relative, like a trackpad: parting the fingers is lifting your
@@ -63,6 +64,75 @@ USB webcam at 30 fps (four sessions, 875 hand frames):
 Your hand and camera may differ. `Scrollpage --calibrate-pinch` walks you
 through open, touching, hovering and three-finger poses and prints your
 percentiles next to the thresholds (see [Diagnostics](#diagnostics)).
+
+### The OK sign
+
+The pointer pinch is an OK sign: besides the thumb and index tips touching,
+the middle, ring and little fingers must be extended. A fist or a half-closed
+hand with the thumb on the index never moves the pointer. Each finger is judged
+by how much farther its tip is from the wrist than its middle joint (PIP), a
+ratio that doesn't change as the hand rotates and needs no hand size. Measured
+on the same webcam (five sessions, about 850 frames per finger), it splits
+cleanly:
+
+| Tip-to-wrist over PIP-to-wrist | Middle | Ring | Little |
+| --- | --- | --- | --- |
+| Curled (most frames) | 0.60 – 0.80 | 0.60 – 0.80 | 0.60 – 0.80 |
+| In between (rare) | 30 frames | 20 frames | 29 frames |
+| Extended (most frames) | 0.95 – 1.40 | 0.95 – 1.40 | 0.95 – 1.40 |
+| While thumb and index touch: p5 / median | 1.14 / 1.22 | 1.09 / 1.18 | 1.06 / 1.13 |
+| PIP angle, curled p90 / extended p10 | 110° / 128° | 105° / 124° | 108° / 127° |
+
+- **Extended at 0.92, curled below 0.85.** A relaxed but extended hand (the
+  little finger's 5th percentile while touching is 1.06) clears 0.92 easily,
+  and a finger has to curl well past the gap to count as curled. Between the
+  two the finger keeps its state, so a finger wobbling at either edge never
+  flickers. Frame-to-frame noise of the ratio is about 0.01; the gap is 0.07.
+- **The joint angle decides when the ratio can't.** When the ratio is between
+  0.80 and 0.92, or the wrist or tip can't be seen (a foreshortened or cropped
+  hand), the angle at the middle joint decides: 120° or straighter is extended,
+  under 112° curled.
+- **Two frames to change state**, and the touch itself still needs its three
+  confirming frames. Every real pinch frame in the recordings has all three
+  fingers extended, so replays touch exactly as before.
+- **A twitch doesn't drop a drag.** If one of the three fingers curls during a
+  touch, the pointer pauses but the touch (and the mouse button, when dragging)
+  holds for 0.3 s. Extend it again and carry on; keep it curled and the touch
+  ends without a click.
+- **Three-finger scroll** needs the ring and little fingers extended, by the
+  same rule: the fingers off the pad are up, so a fist with three tips together
+  doesn't scroll either. The middle finger is the one curling to the thumb
+  there, so it isn't checked.
+
+### Turning the hand
+
+While the OK sign is held, turning the hand at the wrist moves the pointer as
+well as moving the hand does. The angle comes from the vector from the wrist
+to the index and middle knuckles: its angle in the image (yaw) and its length
+against a slow 1.5 s reference (pitch: it shortens as the hand tips toward or
+away from the camera). Both become pointer motion at **2 hand units per
+radian**, in screen axes: turning the fingers to the right goes right (the
+frame is mirrored like the preview), the knuckles rising from the wrist go up,
+whichever way the hand leans.
+
+- **Counted once.** Turning at the wrist also moves the knuckles, by 1 hand
+  unit per radian. That part of the palm's motion is taken back out, so a turn
+  at the wrist moves the pointer as far as sliding the hand 2 hand units per
+  radian would, not 3, and sliding the hand without turning it moves exactly as
+  before. At lever 1 the replays reproduce the old pointer travel within 2 %.
+- **Same pipeline.** Translation plus turn goes through the same One Euro
+  filter and velocity-based acceleration, so a 10° turn is about 60 pt slowly
+  and up to about 600 pt quickly (6 to 60 pt per degree at the default
+  Tracking speed).
+- **No drift.** The knuckle vector is One Euro filtered first (0.5 Hz at rest),
+  and turns slower than the pointer's own rest speeds (0.06 rad/s, fading in
+  fully by 0.2 rad/s, measured at the knuckles) add nothing. A still hand reads
+  0.5° to 0.65° of frame-to-frame yaw noise. Still or slowly swaying (±3°)
+  with webcam-like noise, and on the recorded still hand, the pointer drifts
+  0.00 pt/s (the target is under 1).
+- **Only while pointing.** Scrolling, flicks and the on/off toggle follow the
+  hand's position only. Wrist and knuckles below 0.5 confidence switch the
+  angle off and the pointer follows the palm alone.
 
 ### Three-finger scroll
 
@@ -184,6 +254,8 @@ turn Scrollpage back on. Off by gesture is not remembered across launches.
 - **Jitter.** A One Euro filter smooths the hand position (strong at rest, light
   when moving). Motion is measured in hand units (wrist to middle knuckle), so
   it feels the same near or far from the camera.
+- **Hand angle.** Turning the hand at the wrist adds to the motion, at 2 hand
+  units per radian (see [Turning the hand](#turning-the-hand)).
 - **Rendering.** Gestures move a target; a 120 Hz driver eases the real pointer
   toward it (τ ≈ 22 ms), so 30 fps camera frames still give smooth motion.
 - **Scroll events** are posted like a real trackpad: pixel-precise, continuous,
@@ -336,14 +408,16 @@ flings and how many scroll events each posted.
 
 - `Sources/ScrollpageCore`: the pure, tested motion model: `HandSample` and
   `HandSelector` (right hand only), `TouchDetector` (pinch and three-finger
-  touch), `OneEuroFilter2D`, `PointerAcceleration`, `FlickDetector`,
+  touch), `FingerExtensionTracker` (the OK sign), `WristRotation` (hand
+  angle), `OneEuroFilter2D`, `PointerAcceleration`, `FlickDetector`,
   `ToggleGestureDetector`, `MomentumScroller`, `FlingSequencer`, and
   `GestureEngine`, which turns hand samples into trackpad events.
 - `Sources/Scrollpage`: the app: camera + Vision pipeline, CGEvent input
   driver, menu bar popover, status pill, touch ring, onboarding, diagnostics.
 - `Tests/ScrollpageCoreTests`: XCTest suite driven by a synthetic hand with
   webcam-like noise (drift, tap, double tap, drag, hand loss, touch thresholds
-  and a near-touch hand that never moves the pointer, three-finger scroll and
+  and a near-touch hand that never moves the pointer, the OK sign and curled
+  fingers, wrist rotation and its drift, three-finger scroll and
   its glide, left/right hand selection, flicks and the false-flick cases, the
   on/off toggle and what it blocks, momentum, filter and curve properties).
 
@@ -355,13 +429,18 @@ flings and how many scroll events each posted.
 2. Open the preview from the menu bar. Hold up both hands: the right one should
    be tagged **R** and drawn solid, the left **L** and faded.
 3. With the right hand, bring thumb and index close without touching and move
-   around: nothing moves. Touch them (the tips turn green) and move: the
+   around: nothing moves. Make an OK sign (the tips turn green) and move: the
    pointer moves. A quick touch clicks; two double-click.
-4. Touch thumb, index and middle (the tips turn cyan) and move up, down and
+4. Keep the OK sign and turn the hand at the wrist without moving the arm:
+   the pointer follows the turn. Rest the hand: the pointer stays put.
+5. Touch thumb and index with the other fingers curled (a fist, or ring and
+   little folded): the tips stay yellow and nothing moves. During a drag, twitch
+   one finger closed and open again: the drag holds.
+6. Touch thumb, index and middle (the tips turn cyan) and move up, down and
    sideways: the page follows. Let go while moving: it glides; touch again: it
    stops. The pointer stays put throughout.
-5. Do the same with the left hand alone: nothing happens.
-6. Optional: `build/Scrollpage.app/Contents/MacOS/Scrollpage --calibrate-pinch`
+7. Do the same with the left hand alone: nothing happens.
+8. Optional: `build/Scrollpage.app/Contents/MacOS/Scrollpage --calibrate-pinch`
    and compare your percentiles with the thresholds above.
 
 ## Credits
