@@ -26,14 +26,29 @@ private func screenWithMouse() -> NSScreen? {
 
 // MARK: - Status pill
 
-private struct PillView: View {
+struct PillView: View {
     let state: PillState
+    /// Offscreen renders can't draw glass or materials, so previews use a flat fill.
+    var flat = false
 
     var body: some View {
         let content = HStack(spacing: 7) {
-            Circle()
-                .fill(Color(nsColor: state.color))
-                .frame(width: 7, height: 7)
+            if case let .holding(progress, turningOn) = state {
+                ZStack {
+                    Circle().stroke(.secondary.opacity(0.35), lineWidth: 2)
+                    Circle()
+                        .trim(from: 0, to: progress)
+                        .stroke(turningOn ? Color(nsColor: .systemGreen) : .primary,
+                                style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                }
+                .frame(width: 11, height: 11)
+            } else {
+                Circle()
+                    .fill(Color(nsColor: state.color))
+                    .frame(width: 7, height: 7)
+                    .padding(2)
+            }
             Text(state.label)
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(.primary)
@@ -42,7 +57,12 @@ private struct PillView: View {
         .padding(.vertical, 7)
 
         Group {
-            if #available(macOS 26.0, *) {
+            if flat {
+                content
+                    .background(Color(nsColor: .windowBackgroundColor).opacity(0.92), in: Capsule())
+                    .overlay(Capsule().strokeBorder(.primary.opacity(0.12)))
+                    .shadow(color: .black.opacity(0.15), radius: 8, y: 2)
+            } else if #available(macOS 26.0, *) {
                 content.glassEffect(.regular, in: .capsule)
             } else {
                 content
@@ -84,6 +104,12 @@ final class StatusPill {
         let work = DispatchWorkItem { [weak self] in self?.animate(to: 0, duration: 0.35) }
         hideWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
+    }
+
+    func hide() {
+        hideWork?.cancel()
+        hideWork = nil
+        animate(to: 0, duration: 0.2)
     }
 
     private func animate(to alpha: CGFloat, duration: TimeInterval) {

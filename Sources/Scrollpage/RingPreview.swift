@@ -1,9 +1,11 @@
 import AppKit
+import SwiftUI
 
-/// Debug views of the touch ring.
+/// Debug views of the touch ring and the status pill.
 ///
-/// - `--render-ring out.png [hero.png]` draws each ring state offscreen over
-///   light and dark backgrounds, with the system arrow at the hotspot.
+/// - `--render-ring out.png [hero.png [pills.png]]` draws each ring state
+///   offscreen over light and dark backgrounds, with the system arrow at the
+///   hotspot, and optionally the control toggle's pill states.
 /// - `--ring-demo [seconds]` cycles the real ring through its states at the
 ///   pointer (touch, click, drag, lift).
 enum RingPreview {
@@ -31,8 +33,36 @@ enum RingPreview {
             let sheet = arguments.first ?? "touch-ring-states.png"
             write(columns: states, to: sheet)
             if arguments.count > 1 { write(columns: [states[0]], to: arguments[1]) }
+            if arguments.count > 2 { writePills(to: arguments[2]) }
         }
         exit(0)
+    }
+
+    @MainActor
+    private static func writePills(to path: String) {
+        let pills: [PillState] = [
+            .holding(progress: 0.1, turningOn: false), .holding(progress: 0.6, turningOn: false), .gesturesOff,
+            .holding(progress: 0.6, turningOn: true), .gesturesOn,
+        ]
+        func row(_ scheme: ColorScheme) -> some View {
+            HStack(spacing: 0) {
+                ForEach(pills.indices, id: \.self) { PillView(state: pills[$0], flat: true) }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(scheme == .dark ? Color(white: 0.12) : Color(white: 0.96))
+            .environment(\.colorScheme, scheme)
+        }
+        let sheet = VStack(spacing: 0) {
+            row(.light)
+            row(.dark)
+        }
+        let renderer = ImageRenderer(content: sheet)
+        renderer.scale = 2
+        guard let image = renderer.cgImage,
+              let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { return }
+        try? png.write(to: URL(fileURLWithPath: path))
+        print("Wrote \(path)")
     }
 
     @MainActor

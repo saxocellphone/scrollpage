@@ -74,6 +74,16 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         videoQueue.async { self.engine.settings = settings }
     }
 
+    /// The menu switch. Ending a touch goes out through `onFrame` like any gesture.
+    func setControl(on: Bool) {
+        videoQueue.async {
+            let outputs = self.engine.setControl(on: on)
+            guard !outputs.isEmpty else { return }
+            self.onFrame?(FrameReport(time: Self.hostNow(), hand: nil, outputs: outputs,
+                                      snapshot: self.engine.snapshot, stats: self.stats))
+        }
+    }
+
     /// Starts (or switches) the camera. `completion` runs on the main queue.
     func start(deviceID: String?, completion: @escaping (Result<AVCaptureDevice, Error>) -> Void) {
         sessionQueue.async {

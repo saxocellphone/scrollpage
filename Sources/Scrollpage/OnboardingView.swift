@@ -48,6 +48,11 @@ struct OnboardingView: View {
                              detail: "A quick flick up or down glides the page. Pinch to stop it.", done: model.didScroll)
             }
 
+            Label("To turn gestures off or back on, hold up an open hand with all five fingers spread, still, for a second.",
+                  systemImage: "hand.raised.fingers.spread")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
             HStack {
                 Picker("Camera", selection: Binding(get: { model.cameraID ?? "" },
                                                     set: { model.cameraID = $0.isEmpty ? nil : $0 })) {

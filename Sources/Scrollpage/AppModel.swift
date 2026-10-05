@@ -6,6 +6,9 @@ import ScrollpageCore
 enum PillState: Equatable {
     case on, paused, handInView, noHand, allowAccessibility, cameraUnavailable
     case scroll(String)
+    case gesturesOn, gesturesOff
+    /// A raised palm is being held; `turningOn` says which way it will toggle.
+    case holding(progress: Double, turningOn: Bool)
 
     var label: String {
         switch self {
@@ -16,14 +19,18 @@ enum PillState: Equatable {
         case .allowAccessibility: return "Allow Accessibility"
         case .cameraUnavailable: return "Camera unavailable"
         case .scroll(let arrow): return "Scroll \(arrow)"
+        case .gesturesOn: return "Gestures on"
+        case .gesturesOff: return "Gestures off"
+        case .holding(_, let turningOn): return turningOn ? "Hold to turn on" : "Hold to turn off"
         }
     }
 
     var color: NSColor {
         switch self {
-        case .on, .handInView, .scroll: return .systemGreen
-        case .noHand, .paused: return .systemGray
+        case .on, .handInView, .scroll, .gesturesOn: return .systemGreen
+        case .noHand, .paused, .gesturesOff: return .systemGray
         case .allowAccessibility, .cameraUnavailable: return .systemOrange
+        case .holding(_, let turningOn): return turningOn ? .systemGreen : .systemGray
         }
     }
 }
@@ -39,7 +46,18 @@ final class AppModel: ObservableObject {
         static let onboarded = "onboarded"
     }
 
-    @Published var enabled: Bool { didSet { defaults.set(enabled, forKey: Key.enabled); updateRunState() } }
+    /// Control: the menu switch and the raised-palm gesture both set it. Turned
+    /// off by the gesture, the camera keeps watching for the palm to turn it back
+    /// on; turned off from the menu, the camera stops.
+    @Published var enabled: Bool {
+        didSet {
+            if !togglingByGesture { pausedByGesture = false }
+            defaults.set(enabled || pausedByGesture, forKey: Key.enabled)
+            camera.setControl(on: enabled)
+            updateRunState()
+        }
+    }
+    @Published private(set) var pausedByGesture = false
     @Published var trackingSpeed: Double { didSet { defaults.set(trackingSpeed, forKey: Key.trackingSpeed); pushSettings() } }
     @Published var scrollingSpeed: Double { didSet { defaults.set(scrollingSpeed, forKey: Key.scrollingSpeed); pushSettings() } }
     @Published var naturalScrolling: Bool { didSet { defaults.set(naturalScrolling, forKey: Key.naturalScrolling); pushSettings() } }
@@ -83,6 +101,8 @@ final class AppModel: ObservableObject {
     private var rawHandVisible = false
     private var rawHandChangedAt = 0.0
     private var basePill: PillState?
+    private var togglingByGesture = false
+    private var shownHoldProgress = 0.0
     private var lastUIUpdate = 0.0
     private var observers: [NSObjectProtocol] = []
 
@@ -98,6 +118,7 @@ final class AppModel: ObservableObject {
         scrollingSpeed = defaults.double(forKey: Key.scrollingSpeed)
         naturalScrolling = defaults.bool(forKey: Key.naturalScrolling)
         cameraID = defaults.string(forKey: Key.cameraID)
+        camera.setControl(on: enabled)
 
         // Runs on the camera queue: gestures go straight to the input driver,
         // the UI catches up on the main queue.
@@ -121,6 +142,7 @@ final class AppModel: ObservableObject {
     }
 
     var statusLine: String {
+        if pausedByGesture { return "Gestures off. Hold up an open hand, fingers spread, to turn on" }
         if !enabled { return "Paused" }
         if let cameraError { return cameraError }
         if cameraStatus == .denied || cameraStatus == .restricted { return "Camera access is off" }
@@ -169,7 +191,7 @@ final class AppModel: ObservableObject {
 
     private func updateRunState() {
         driver.setPostingAllowed(accessibilityTrusted && enabled)
-        let shouldRun = (enabled || previewOpen) && !systemPaused
+        let shouldRun = (enabled || pausedByGesture || previewOpen) && !systemPaused
         if shouldRun && !cameraRunning {
             startCamera()
         } else if !shouldRun && cameraRunning {
@@ -288,6 +310,11 @@ final class AppModel: ObservableObject {
     private func apply(_ report: FrameReport) {
         let now = CACurrentMediaTime()
         let snapshot = report.snapshot
+        if snapshot.toggled {
+            gestureToggled(on: snapshot.controlOn)
+        } else {
+            showHoldProgress(snapshot)
+        }
         if enabled {
             let clicked = report.outputs.contains { if case .click = $0 { return true } else { return false } }
             ring.update(touching: snapshot.isTouching, pressed: snapshot.isPressed, clicked: clicked)
@@ -325,6 +352,29 @@ final class AppModel: ObservableObject {
         if previewOpen { latestHand = report.hand } else if latestHand != nil { latestHand = nil }
     }
 
+    private func gestureToggled(on: Bool) {
+        shownHoldProgress = 0
+        togglingByGesture = true
+        pausedByGesture = !on
+        enabled = on
+        togglingByGesture = false
+        pill.show(on ? .gesturesOn : .gesturesOff)
+    }
+
+    /// Progress appears once the palm has been held still briefly, and the pill
+    /// fades as soon as the hold is abandoned.
+    private func showHoldProgress(_ snapshot: GestureSnapshot) {
+        let progress = snapshot.toggleProgress
+        if progress > 0 {
+            guard shownHoldProgress == 0 || abs(progress - shownHoldProgress) >= 0.02 else { return }
+            shownHoldProgress = progress
+            pill.show(.holding(progress: progress, turningOn: !snapshot.controlOn))
+        } else if shownHoldProgress > 0 {
+            shownHoldProgress = 0
+            pill.hide()
+        }
+    }
+
     /// The direction the page travels through the document.
     private static func arrow(vx: Double, vy: Double) -> String {
         if abs(vy) >= abs(vx) { return vy < 0 ? "↓" : "↑" }
@@ -333,7 +383,9 @@ final class AppModel: ObservableObject {
 
     private func refreshPill() {
         let state: PillState
-        if !enabled {
+        if pausedByGesture {
+            state = .gesturesOff
+        } else if !enabled {
             state = .paused
         } else if cameraError != nil || cameraStatus == .denied || cameraStatus == .restricted {
             state = .cameraUnavailable
