@@ -136,6 +136,9 @@ enum Diagnostics {
         private var recent: [(t: Double, p: Vec2)] = []
         private var counts: [String: Int] = [:]
         private var travel = 0.0
+        private let toggle = ToggleGestureDetector()
+        private var palmFrames = 0
+        private var maxToggleProgress = 0.0
         private let recorder: FileHandle?
 
         init(recordPath: String?) {
@@ -164,6 +167,11 @@ enum Diagnostics {
                 case let .pointerMoved(dx, dy): travel += (dx * dx + dy * dy).squareRoot()
                 case .touchEnded: break
                 }
+            }
+            if r.snapshot.toggled { counts[r.snapshot.controlOn ? "toggle on" : "toggle off", default: 0] += 1 }
+            maxToggleProgress = max(maxToggleProgress, r.snapshot.toggleProgress)
+            if let hand = r.hand, let size = r.snapshot.handSize, toggle.isRaisedPalm(hand, handSize: size) {
+                palmFrames += 1
             }
 
             if let hand = r.hand, let palm = hand.palmCenter, let size = r.snapshot.handSize {
@@ -237,6 +245,7 @@ enum Diagnostics {
             }
             let gestures = counts.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: ", ")
             print("Gestures          \(gestures.isEmpty ? "none" : gestures); pointer travel \(f(travel, 0)) pt")
+            print("Raised palm       \(f(100 * Double(palmFrames) / Double(max(1, handFrames)), 1)) % of hand frames; longest still hold \(f(100 * maxToggleProgress, 0)) % of a toggle")
         }
     }
 }
