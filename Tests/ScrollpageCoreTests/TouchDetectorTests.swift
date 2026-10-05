@@ -2,9 +2,10 @@ import XCTest
 @testable import ScrollpageCore
 
 private func tips(ti: Double, tm: Double = 0.5, im: Double = 0.5,
-                     readable: Bool = true, middleReadable: Bool = true) -> TouchMeasure {
+                     readable: Bool = true, middleReadable: Bool = true,
+                     extended: Set<Finger> = [.middle, .ring, .little]) -> TouchMeasure {
     TouchMeasure(thumbIndex: ti, thumbMiddle: tm, indexMiddle: im, readable: readable,
-                 middleReadable: readable && middleReadable)
+                 middleReadable: readable && middleReadable, extended: extended)
 }
 
 final class TouchClassifierTests: XCTestCase {
@@ -37,6 +38,19 @@ final class TouchClassifierTests: XCTestCase {
         XCTAssertLessThan(t.threeExit, t.middleApart)
         XCTAssertLessThan(t.pinchEnter, t.pinchExit)
         XCTAssertLessThan(t.threeEnter, t.threeExit)
+    }
+
+    func testPinchNeedsTheOtherThreeFingersExtended() {
+        XCTAssertEqual(detector.pose(tips(ti: 0.03, extended: [.middle, .ring, .little])), .pinch)
+        XCTAssertNil(detector.pose(tips(ti: 0.03, extended: [.middle])), "ring and little curled")
+        XCTAssertNil(detector.pose(tips(ti: 0.03, extended: [.ring, .little])), "middle curled")
+        XCTAssertNil(detector.pose(tips(ti: 0.03, extended: [])), "fist")
+    }
+
+    func testThreeFingerNeedsRingAndLittleExtended() {
+        XCTAssertEqual(detector.pose(tips(ti: 0.03, tm: 0.04, im: 0.04, extended: [.ring, .little])), .threeFinger)
+        XCTAssertNil(detector.pose(tips(ti: 0.03, tm: 0.04, im: 0.04, extended: [.ring])))
+        XCTAssertNil(detector.pose(tips(ti: 0.03, tm: 0.04, im: 0.04, extended: [])))
     }
 
     func testUnreadableFramesNeverTouch() {

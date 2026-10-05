@@ -1,10 +1,21 @@
 import Foundation
 
 public enum TouchKind: String, Equatable, Sendable {
-    /// Thumb and index tips touching, middle finger apart: one finger on the pad.
+    /// Thumb and index tips touching, the other three fingers extended (an
+    /// "OK" sign): one finger on the pad.
     case pinch
-    /// Thumb, index and middle tips touching: two fingers on the pad, to scroll.
+    /// Thumb, index and middle tips touching, ring and little extended: two
+    /// fingers on the pad, to scroll.
     case threeFinger
+
+    /// The fingers that must stay extended, off the pad. A fist or a half-closed
+    /// hand never touches.
+    public var liftedFingers: Set<Finger> {
+        switch self {
+        case .pinch: [.middle, .ring, .little]
+        case .threeFinger: [.ring, .little]
+        }
+    }
 }
 
 /// Contact thresholds in hand sizes (wrist to middle knuckle).
@@ -48,6 +59,12 @@ public struct TouchThresholds: Equatable, Sendable {
     /// Fingers seen apart before the hand was lost still count if it comes
     /// back within this long, so a tracking dropout doesn't swallow a pinch.
     public var armedAfterLoss = 0.5
+    /// When the fingers that must stay extended count as extended or curled.
+    public var fingers = ExtensionThresholds()
+    /// During a touch, one of those fingers may curl this long (the touch
+    /// pauses but holds, so a drag survives a twitch); after that the touch
+    /// ends without a click.
+    public var curlGrace = 0.3
 
     public init() {}
 }
@@ -61,14 +78,21 @@ public struct TouchMeasure: Equatable, Sendable {
     public var readable = false
     /// So is the middle tip.
     public var middleReadable = false
+    /// Fingers extended, and fingers curled. `TouchDetector` fills these from
+    /// its hysteresis; measured on their own they come from this frame alone.
+    public var extended: Set<Finger> = []
+    public var curled: Set<Finger> = []
 
     public init(thumbIndex: Double? = nil, thumbMiddle: Double? = nil, indexMiddle: Double? = nil,
-                readable: Bool = false, middleReadable: Bool = false) {
+                readable: Bool = false, middleReadable: Bool = false,
+                extended: Set<Finger> = [], curled: Set<Finger> = []) {
         self.thumbIndex = thumbIndex
         self.thumbMiddle = thumbMiddle
         self.indexMiddle = indexMiddle
         self.readable = readable
         self.middleReadable = middleReadable
+        self.extended = extended
+        self.curled = curled
     }
 
     /// The largest of the three fingertip distances.
@@ -91,6 +115,13 @@ public struct TouchMeasure: Equatable, Sendable {
         readable = thumbIndex != nil && confident(.thumbTip) && confident(.indexTip)
             && (hand.handSizeConfidence ?? 0) >= thresholds.minSizeConfidence
         middleReadable = readable && thumbMiddle != nil && confident(.middleTip)
+        for finger in Finger.allCases {
+            switch hand.extensionReading(finger, thresholds: thresholds.fingers) {
+            case .extended: extended.insert(finger)
+            case .curled: curled.insert(finger)
+            case .between, .unreadable: break
+            }
+        }
     }
 }
 
@@ -105,9 +136,11 @@ public enum TouchEvent: Equatable, Sendable {
 ///
 /// A touch begins only after the thumb and index tips have been seen apart, and
 /// then showed a touch pose on `confirmFrames` frames without leaving the exit
-/// threshold or becoming unreadable in between. Once it
-/// begins, its kind is locked until it ends: a pinch can't turn into a
-/// three-finger touch or back.
+/// threshold or becoming unreadable in between. A touch pose includes the
+/// fingers that stay off the pad (`TouchKind.liftedFingers`) being extended.
+/// Once it begins, its kind is locked until it ends: a pinch can't turn into a
+/// three-finger touch or back. If one of the lifted fingers curls, the touch
+/// pauses; curled for longer than `curlGrace`, it ends without a click.
 public struct TouchDetector: Sendable {
     public var thresholds: TouchThresholds
 
@@ -118,15 +151,18 @@ public struct TouchDetector: Sendable {
     /// The touch is firmly in contact this frame, so it may move the pointer or scroll.
     public private(set) var canMove = false
     public private(set) var measure = TouchMeasure()
+    public private(set) var fingers: FingerExtensionTracker
 
     private var pendingFrames = 0
     private var releaseCount = 0
     private var unreadableSince: Double?
+    private var curledSince: Double?
     private var armed = false
     private var armedUntil: Double?
 
     public init(thresholds: TouchThresholds = TouchThresholds()) {
         self.thresholds = thresholds
+        fingers = FingerExtensionTracker(thresholds: thresholds.fingers)
     }
 
     /// A touch is in progress or being confirmed.
@@ -139,6 +175,8 @@ public struct TouchDetector: Sendable {
         pendingFrames = 0
         releaseCount = 0
         unreadableSince = nil
+        curledSince = nil
+        fingers.reset()
         armed = false
         armedUntil = nil
         canMove = false
@@ -156,16 +194,20 @@ public struct TouchDetector: Sendable {
     public func pose(_ m: TouchMeasure) -> TouchKind? {
         guard m.readable, let ti = m.thumbIndex else { return nil }
         if m.middleReadable, let spread = m.threeSpread, spread <= thresholds.threeEnter {
-            return .threeFinger
+            return TouchKind.threeFinger.liftedFingers.isSubset(of: m.extended) ? .threeFinger : nil
         }
         if ti <= thresholds.pinchEnter, m.middleReadable, let gap = m.middleGap, gap >= thresholds.middleApart {
-            return .pinch
+            return TouchKind.pinch.liftedFingers.isSubset(of: m.extended) ? .pinch : nil
         }
         return nil
     }
 
     public mutating func update(_ hand: HandSample, handSize: Double, at t: Double) -> TouchEvent? {
-        let m = TouchMeasure(hand, handSize: handSize, thresholds: thresholds)
+        var m = TouchMeasure(hand, handSize: handSize, thresholds: thresholds)
+        fingers.thresholds = thresholds.fingers
+        fingers.update(hand)
+        m.extended = fingers.extended
+        m.curled = fingers.curled
         measure = m
         canMove = false
         if let until = armedUntil {
@@ -187,7 +229,17 @@ public struct TouchDetector: Sendable {
             unreadableSince = nil
             if contact.inside {
                 releaseCount = 0
-                canMove = contact.firm
+                guard !kind.liftedFingers.isDisjoint(with: m.curled) else {
+                    curledSince = nil
+                    canMove = contact.firm
+                    return nil
+                }
+                let since = curledSince ?? t
+                curledSince = since
+                if t - since > thresholds.curlGrace {
+                    endTouch()
+                    return .ended(kind, lifted: false)
+                }
                 return nil
             }
             releaseCount += 1
@@ -202,7 +254,8 @@ public struct TouchDetector: Sendable {
         let kind = armed ? pose(m) : nil
         if let kind, kind == pending {
             pendingFrames += 1
-        } else if kind == nil, let p = pending, contact(p, m)?.inside == true {
+        } else if kind == nil, let p = pending, contact(p, m)?.inside == true,
+                  p.liftedFingers.isSubset(of: m.extended) {
             // A noisy frame still inside the exit threshold neither counts
             // toward the touch nor starts the count over.
             return nil
@@ -235,6 +288,7 @@ public struct TouchDetector: Sendable {
         active = nil
         releaseCount = 0
         unreadableSince = nil
+        curledSince = nil
         canMove = false
     }
 }

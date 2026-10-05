@@ -215,7 +215,6 @@ final class GestureEngineClickTests: XCTestCase {
     func testHandArrivingAlreadyPinchedDoesNotTouchUntilItOpens() {
         let rig = Rig()
         rig.pose.pinchRatio = Rig.touching
-        rig.pose.fingersOpen = false
         rig.run(0.3, visible: false)
         rig.hold(0.6)
         rig.move(by: Vec2(0.5 * hu, 0), over: 0.4)

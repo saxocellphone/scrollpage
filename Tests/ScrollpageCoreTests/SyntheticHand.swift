@@ -37,10 +37,20 @@ struct HandPose: Equatable {
     var thumbTucked = false
     /// Fingers (named by their knuckle) curled even when the others are open.
     var folded: Set<HandJoint> = []
+    /// Partly bent fingers (named by their knuckle), 0 straight to 1 curled.
+    /// For the ring finger 0.4 reads as relaxed but extended (tip ratio 1.17,
+    /// middle joint 140 degrees), 0.72 to 0.78 between the tolerances, and 0.85
+    /// curled (0.81, 95).
+    var curl: [HandJoint: Double] = [:]
     /// Joints reported with too little confidence to use.
     var hidden: Set<HandJoint> = []
-    /// Rotation of the whole hand about the palm, degrees, clockwise on screen.
+    /// Rotation of the whole hand, degrees, clockwise on screen: about the palm,
+    /// or about the wrist when `pivotAtWrist`.
     var tilt = 0.0
+    var pivotAtWrist = false
+    /// Apparent length of the hand along its axis, from the wrist, as when it
+    /// tips toward or away from the camera: 1 is facing it.
+    var foreshortening = 1.0
     /// Vision's label for the hand.
     var chirality: Chirality? = .right
     /// When set, the middle finger curls to the thumb and index tips: its tip
@@ -85,11 +95,15 @@ struct SyntheticHand {
         func finger(_ mcp: HandJoint, _ pip: HandJoint, _ dip: HandJoint, _ tip: HandJoint, open: Bool) {
             let base = joints[mcp]!
             if open && !pose.folded.contains(mcp) {
-                let angle = (pose.spread ? fan[mcp]! : 0) * .pi / 180
-                let up = Vec2(sin(angle), -cos(angle)) * s
-                joints[pip] = base + up * 0.45
-                joints[dip] = base + up * 0.70
-                joints[tip] = base + up * 0.90
+                // Each joint bends by its share of a full curl, toward the little finger.
+                let c = pose.curl[mcp] ?? 0
+                var angle = (pose.spread ? fan[mcp]! : 0) * .pi / 180
+                var at = base
+                for (joint, length, flex) in [(pip, 0.45, 60.0), (dip, 0.25, 100.0), (tip, 0.20, 70.0)] {
+                    angle += c * flex * .pi / 180
+                    at = at + Vec2(sin(angle), -cos(angle)) * (length * s)
+                    joints[joint] = at
+                }
             } else {
                 joints[pip] = base + Vec2(0, -0.35 * s)
                 joints[dip] = base + Vec2(0, -0.15 * s)
@@ -135,9 +149,11 @@ struct SyntheticHand {
         }
 
         let angle = pose.tilt * .pi / 180
+        let pivot = pose.pivotAtWrist ? wrist : p
         func rotate(_ v: Vec2) -> Vec2 {
-            let d = v - p
-            return p + Vec2(d.x * cos(angle) - d.y * sin(angle), d.x * sin(angle) + d.y * cos(angle))
+            let v = Vec2(v.x, wrist.y + (v.y - wrist.y) * pose.foreshortening)
+            let d = v - pivot
+            return pivot + Vec2(d.x * cos(angle) - d.y * sin(angle), d.x * sin(angle) + d.y * cos(angle))
         }
 
         var points: [HandJoint: JointPoint] = [:]
