@@ -122,8 +122,10 @@ public struct GestureTiming: Equatable, Sendable {
 
 /// Turns a stream of hand samples into trackpad-like events.
 ///
-/// - Pinch and move is a finger on the pad: relative pointer motion, with
-///   velocity-based acceleration.
+/// - Pinch (an "OK" sign) and move is a finger on the pad: relative pointer
+///   motion, with velocity-based acceleration. Turning the hand at the wrist
+///   moves the pointer too (`WristRotation`); scrolling and flicks follow the
+///   hand's position only.
 /// - A quick pinch without moving is tap-to-click (double tap double-clicks).
 /// - Pinch and hold still, then move, drags.
 /// - Thumb, index and middle together, then move, is two-finger scrolling: the
@@ -149,6 +151,10 @@ public final class GestureEngine {
     public var filter = OneEuroFilter2D()
     public var flick = FlickDetector()
     public var toggle = ToggleGestureDetector()
+    public var rotation = WristRotation()
+    /// Filters the pointer track (the hand's motion plus its turn at the wrist)
+    /// the same way `filter` does the hand's motion.
+    public var pointerFilter = OneEuroFilter2D()
 
     private struct Touch {
         var kind: TouchKind
@@ -165,6 +171,10 @@ public final class GestureEngine {
     private var virtual = Vec2.zero
     private var previousFiltered: Vec2?
     private var history: [(t: Double, p: Vec2)] = []
+    /// `virtual` plus the hand's turn at the wrist: what a pinch moves the pointer by.
+    private var pointerVirtual = Vec2.zero
+    private var previousPointerFiltered: Vec2?
+    private var pointerHistory: [(t: Double, p: Vec2)] = []
     private var trackedSince: Double?
     private var lastSeen: Double?
     private var lastRelease = -Double.infinity
@@ -235,14 +245,24 @@ public final class GestureEngine {
 
         let size = handSize.map { $0 + (rawSize - $0) * 0.2 } ?? rawSize
         handSize = size
-        if let prev = previousPalm { virtual += (palm - prev) / size }
+        let turn = rotation.update(hand, handSize: size, at: t)
+        if let prev = previousPalm {
+            let step = (palm - prev) / size
+            virtual += step
+            pointerVirtual += step + turn
+        }
         previousPalm = palm
 
         let filtered = filter.filter(virtual, at: t)
         let delta = previousFiltered.map { filtered - $0 } ?? .zero
         previousFiltered = filtered
-        let speed = measureSpeed(filtered, at: t)
-        let pointerDelta = acceleration.displacement(for: delta, speed: speed)
+        let speed = measureSpeed(&history, filtered, at: t)
+
+        let pointerFiltered = pointerFilter.filter(pointerVirtual, at: t)
+        let pointerStep = previousPointerFiltered.map { pointerFiltered - $0 } ?? .zero
+        previousPointerFiltered = pointerFiltered
+        let pointerSpeed = measureSpeed(&pointerHistory, pointerFiltered, at: t)
+        let pointerDelta = acceleration.displacement(for: pointerStep, speed: pointerSpeed)
 
         var blocked: String?
         let toggled = toggle.update(hand, handSize: size, position: filtered, speed: speed, at: t)
@@ -265,7 +285,7 @@ public final class GestureEngine {
         } else {
             switch touches.update(hand, handSize: size, at: t) {
             case .began(let kind):
-                touch = Touch(kind: kind, start: t, origin: filtered)
+                touch = Touch(kind: kind, start: t, origin: pointerFiltered)
                 flick.reset()
                 if let g = glide, t - g.start >= g.catchDelay, t - g.start <= MomentumScroller().maxGlideDuration {
                     out.append(.catchGlide)
@@ -283,7 +303,7 @@ public final class GestureEngine {
                 endTouch(at: t, lifted: lifted, &out)
             case nil:
                 if let current = touch {
-                    continueTouch(current, filtered: filtered, delta: delta, speed: speed,
+                    continueTouch(current, pointer: pointerFiltered, delta: delta, speed: speed,
                                   pointerDelta: pointerDelta, at: t, &out)
                 } else {
                     blocked = watchFlick(hand, speed: speed, at: t, &out)
@@ -309,7 +329,7 @@ public final class GestureEngine {
         return out
     }
 
-    private func continueTouch(_ current: Touch, filtered: Vec2, delta: Vec2, speed: Double, pointerDelta: Vec2,
+    private func continueTouch(_ current: Touch, pointer: Vec2, delta: Vec2, speed: Double, pointerDelta: Vec2,
                                at t: Double, _ out: inout [GestureOutput]) {
         var current = current
         defer { touch = current }
@@ -322,7 +342,7 @@ public final class GestureEngine {
             if d != .zero { out.append(.scrolled(dx: d.x, dy: d.y)) }
             return
         }
-        if !current.moved && filtered.distance(to: current.origin) > timing.tapSlop {
+        if !current.moved && pointer.distance(to: current.origin) > timing.tapSlop {
             current.moved = true
         }
         if !current.moved && !current.pressed && t - current.start >= timing.pressDelay {
@@ -390,7 +410,7 @@ public final class GestureEngine {
 
     /// Speed over the last ~80 ms of filtered motion. A per-frame difference is
     /// too noisy to pick the acceleration gain from.
-    private func measureSpeed(_ p: Vec2, at t: Double) -> Double {
+    private func measureSpeed(_ history: inout [(t: Double, p: Vec2)], _ p: Vec2, at t: Double) -> Double {
         history.append((t, p))
         while history.count > 2, t - history[1].t >= timing.speedWindow { history.removeFirst() }
         guard let first = history.first, t > first.t else { return 0 }
@@ -464,6 +484,10 @@ public final class GestureEngine {
         flickHoldoff = nil
         filter.reset()
         history.removeAll()
+        rotation.reset()
+        pointerFilter.reset()
+        pointerHistory.removeAll()
+        previousPointerFiltered = nil
         trackedSince = nil
         lastSeen = nil
         previousPalm = nil
