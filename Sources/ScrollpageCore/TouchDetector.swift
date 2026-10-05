@@ -45,6 +45,9 @@ public struct TouchThresholds: Equatable, Sendable {
     /// During a touch, frames that can't be read (fingertips hidden or
     /// uncertain) hold it this long; after that it ends without a click.
     public var unreadableGrace = 0.2
+    /// Fingers seen apart before the hand was lost still count if it comes
+    /// back within this long, so a tracking dropout doesn't swallow a pinch.
+    public var armedAfterLoss = 0.5
 
     public init() {}
 }
@@ -120,6 +123,7 @@ public struct TouchDetector: Sendable {
     private var releaseCount = 0
     private var unreadableSince: Double?
     private var armed = false
+    private var armedUntil: Double?
 
     public init(thresholds: TouchThresholds = TouchThresholds()) {
         self.thresholds = thresholds
@@ -136,7 +140,16 @@ public struct TouchDetector: Sendable {
         releaseCount = 0
         unreadableSince = nil
         armed = false
+        armedUntil = nil
         canMove = false
+    }
+
+    /// The hand left: any touch is over (the caller ends it), but fingers
+    /// already seen apart stay so for `armedAfterLoss`.
+    public mutating func handLost(at t: Double) {
+        let until = armed ? t + thresholds.armedAfterLoss : armedUntil
+        reset()
+        armedUntil = until
     }
 
     /// The touch pose this frame shows, ignoring confirmation and arming.
@@ -155,6 +168,10 @@ public struct TouchDetector: Sendable {
         let m = TouchMeasure(hand, handSize: handSize, thresholds: thresholds)
         measure = m
         canMove = false
+        if let until = armedUntil {
+            armed = t <= until
+            armedUntil = nil
+        }
 
         if let kind = active {
             guard let contact = contact(kind, m) else {

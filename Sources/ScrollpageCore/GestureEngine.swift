@@ -87,8 +87,15 @@ public struct GestureTiming: Equatable, Sendable {
     public var pressDelay = 0.6
     /// Tracking gaps up to this long are bridged without ending a touch.
     public var lostGrace = 0.15
+    /// Faster palm motion (hand units per second, plus half a hand of slack)
+    /// is a tracking jump, not the hand: flicks peak below 20.
+    public var maxHandSpeed = 30.0
     /// After a pinch ends, no flick for this long.
     public var flickAfterRelease = 0.25
+    /// Thumb and index tips closer than this (hand sizes) are reaching for a
+    /// pinch, not flicking: hovering tips read 0.13 to 0.23 (10th to 75th
+    /// percentile), an open hand 0.3 and up.
+    public var flickMinThumbIndex = 0.25
     /// A newly acquired hand must be tracked this long before it can flick.
     public var flickAfterAcquire = 0.15
     /// After a toggle, no flick until the hand has left the raised palm for this
@@ -212,6 +219,13 @@ public final class GestureEngine {
             return out
         }
 
+        // A palm that moved farther than a hand can is another detection, or
+        // the hand found again elsewhere: start over as with a new hand, so the
+        // jump never moves the pointer, scrolls or flings.
+        if let prev = previousPalm, let seen = lastSeen, let size = handSize,
+           palm.distance(to: prev) / size > timing.maxHandSpeed * (t - seen) + 0.5 {
+            loseHand(at: t, &out)
+        }
         if trackedSince == nil {
             trackedSince = t
             flick.reset()
@@ -334,9 +348,13 @@ public final class GestureEngine {
         let afterRelease = t - lastRelease >= timing.flickAfterRelease
         let afterAcquire = t - (trackedSince ?? t) >= timing.flickAfterAcquire
         let afterToggle = flickHoldoff == nil
+        let m = touches.measure
+        let reaching = m.readable && (m.thumbIndex ?? .infinity) < timing.flickMinThumbIndex
         if !flick.inStroke && speed > flick.config.startSpeed {
             if !hand.isOpenHand {
                 blocked = "hand not open (\(hand.extendedFingerCount) fingers)"
+            } else if reaching {
+                blocked = "thumb near the index"
             } else if !afterRelease {
                 blocked = "just released a touch"
             } else if !afterAcquire {
@@ -345,7 +363,7 @@ public final class GestureEngine {
                 blocked = "just toggled control"
             }
         }
-        let mayFlick = afterRelease && afterAcquire && afterToggle && hand.isOpenHand
+        let mayFlick = afterRelease && afterAcquire && afterToggle && hand.isOpenHand && !reaching
         if let f = flick.update(position: virtual, at: t, canStart: mayFlick) {
             glide = (t, timing.glideCatchDelay)
             out.append(fling(for: f))
@@ -440,7 +458,7 @@ public final class GestureEngine {
 
     private func loseHand(at t: Double, _ out: inout [GestureOutput]) {
         endTouch(at: t, lifted: false, &out)
-        touches.reset()
+        touches.handLost(at: t)
         flick.reset()
         toggle.handLost(at: t)
         flickHoldoff = nil

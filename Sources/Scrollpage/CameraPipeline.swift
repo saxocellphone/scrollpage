@@ -209,7 +209,7 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         }
         let hand = selector.select(hands, at: t, locked: engine.isEngaged)
 
-        let outputs = engine.process(hand, at: t)
+        let outputs = (selector.isNewHand ? engine.reset() : []) + engine.process(hand, at: t)
         let end = Self.hostNow()
         let stroke = logGestures(outputs)
 

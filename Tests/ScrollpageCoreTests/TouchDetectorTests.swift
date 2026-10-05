@@ -186,6 +186,20 @@ final class TouchDetectorTests: XCTestCase {
         XCTAssertTrue(detector.canMove)
     }
 
+    func testFingersSeenApartSurviveAShortLoss() {
+        frames(3, ti: 0.8)
+        detector.handLost(at: t)
+        t += 0.3
+        XCTAssertEqual(frames(3, ti: 0.03), [.began(.pinch)], "back within 0.5 s, already touching")
+
+        frames(3, ti: 0.8)
+        frames(3, ti: 0.03)
+        detector.handLost(at: t)
+        XCTAssertNil(detector.active)
+        t += 1.0
+        XCTAssertEqual(frames(10, ti: 0.03), [], "back after a long absence: a fresh hand")
+    }
+
     func testHalfFormedThreeFingerIsNeitherTouch() {
         frames(3, ti: 0.8)
         XCTAssertEqual(frames(30, ti: 0.03, middle: 0.17), [], "middle tip near but not touching")

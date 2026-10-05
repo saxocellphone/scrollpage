@@ -230,6 +230,43 @@ final class GestureEngineClickTests: XCTestCase {
         XCTAssertEqual(rig.clicks, [1])
     }
 
+    func testTrackingJumpEndsATouchWithoutMovingOrClicking() {
+        let rig = Rig()
+        rig.hold(0.5)
+        rig.pinch(true)
+        rig.move(by: Vec2(0.3 * hu, 0), over: 0.3)
+        let before = rig.pointerTravel().path
+        rig.pose.palm += Vec2(-0.4, 0.15)
+        rig.hold(0.05)
+        XCTAssertEqual(rig.count(.touchEnded), 1)
+        XCTAssertEqual(rig.pointerTravel().path, before, accuracy: 1, "the jump itself moves nothing")
+        rig.pinch(false)
+        rig.hold(0.3)
+        XCTAssertTrue(rig.clicks.isEmpty)
+    }
+
+    func testTrackingJumpOfAnOpenHandDoesNotFling() {
+        let rig = Rig()
+        rig.hold(0.5)
+        rig.pose.palm += Vec2(0, -0.35)
+        rig.hold(0.5)
+        XCTAssertTrue(rig.flings.isEmpty)
+    }
+
+    /// Recorded: the hand dipped out at the bottom of the frame, Vision found it
+    /// again 0.4 image heights up, already pinched, and the pinch was lost.
+    func testHandFoundAgainElsewhereAlreadyPinchedStillTouches() {
+        let rig = Rig.webcam(fps: 30)
+        rig.hold(0.6)
+        rig.run(0.27, visible: false)
+        rig.pose.palm += Vec2(0.3, -0.25)
+        rig.pose.pinchRatio = Rig.touching
+        rig.hold(0.3)
+        XCTAssertEqual(rig.count(.touchBegan), 1)
+        rig.move(by: Vec2(0.5 * rig.pose.size, 0), over: 0.4)
+        XCTAssertGreaterThan(rig.pointerTravel().net.x, 50)
+    }
+
     func testShortTrackingGapIsBridged() {
         let rig = Rig()
         rig.hold(0.5)
@@ -324,6 +361,17 @@ final class GestureEngineFlickTests: XCTestCase {
         flick(rig, dy: 1.5, over: 0.6)
         rig.hold(0.3)
         XCTAssertTrue(rig.flings.isEmpty)
+    }
+
+    func testReachingForAPinchDoesNotFling() {
+        let rig = Rig()
+        rig.pose.pinchRatio = 0.15
+        rig.hold(0.5)
+        flick(rig, dy: -0.6)
+        XCTAssertEqual(rig.engine.snapshot.flickBlocked ?? rig.engine.flick.lastStroke.map { _ in "stroke" }, "thumb near the index")
+        rig.hold(0.5)
+        XCTAssertTrue(rig.flings.isEmpty)
+        XCTAssertEqual(rig.pointerTravel().path, 0)
     }
 
     func testClosedHandDoesNotFling() {

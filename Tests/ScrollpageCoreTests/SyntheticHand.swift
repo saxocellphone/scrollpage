@@ -205,6 +205,7 @@ final class Rig {
             let seen = visible && !(dropped?.contains(i) ?? false)
             let hands = seen ? others.map { hand.sample($0) } + [hand.sample(pose)] : others.map { hand.sample($0) }
             let sample = selector.select(hands, at: t, locked: engine.isEngaged)
+            if selector.isNewHand { for o in engine.reset() { outputs.append((t, o)) } }
             for o in engine.process(sample, at: t) { outputs.append((t, o)) }
             let snapshot = engine.snapshot
             if snapshot.toggled { toggles.append((t, snapshot.controlOn)) }

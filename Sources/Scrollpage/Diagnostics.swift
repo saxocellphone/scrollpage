@@ -155,7 +155,7 @@ enum Diagnostics {
                   let t = object["t"] as? Double else { continue }
             let hands = decodeHands(object)
             let hand = selector.select(hands, at: t, locked: engine.isEngaged)
-            let outputs = engine.process(hand, at: t)
+            let outputs = (selector.isNewHand ? engine.reset() : []) + engine.process(hand, at: t)
             var stroke: StrokeReport?
             if engine.flick.strokeCount != strokeCount {
                 strokeCount = engine.flick.strokeCount
@@ -218,8 +218,22 @@ enum Diagnostics {
             for h in r.hands { chirality[h.chirality?.rawValue ?? "unknown", default: 0] += 1 }
             if r.hand == nil && !r.hands.isEmpty { ignoredFrames += 1 }
 
+            let stamp = String(format: "%8.2f s  ", r.time - (firstTime ?? r.time))
+            let m = r.snapshot.touch
+            let tips = "tips \(m.thumbIndex.map { fmt($0, 3) } ?? "–")/\(m.threeSpread.map { fmt($0, 3) } ?? "–")"
+            for output in r.outputs {
+                switch output {
+                case .touchBegan: print(stamp + "pinch down (\(tips))")
+                case .scrollBegan: print(stamp + "three-finger scroll down (\(tips))")
+                case let .click(count): print(stamp + "click ×\(count)")
+                case .pressBegan: print(stamp + "press (drag)")
+                case .touchEnded: print(stamp + "pinch up (\(tips))")
+                case let .scrollEnded(vx, vy): print(stamp + "scroll up, glide \(fmt(Vec2(vx, vy).length, 0)) pt/s")
+                default: break
+                }
+            }
             if let stroke = r.stroke {
-                print(String(format: "%8.2f s  ", r.time - (firstTime ?? r.time)) + stroke.summary)
+                print(stamp + stroke.summary)
                 counts["stroke: \(stroke.verdict.rawValue)", default: 0] += 1
             }
             if let blocked = r.snapshot.flickBlocked, blocked != lastBlocked {

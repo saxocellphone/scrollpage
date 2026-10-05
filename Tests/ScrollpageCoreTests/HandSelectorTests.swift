@@ -109,6 +109,15 @@ final class HandSelectorTests: XCTestCase {
         for _ in 0..<20 { XCTAssertNil(select([left], locked: true)) }
     }
 
+    func testRightHandFoundElsewhereIsAcquiredAtOnce() {
+        let right = hand(.right, at: rightPalm)
+        for _ in 0..<5 { select([right]) }
+        let moved = hand(.right, at: rightPalm + Vec2(-0.4, 0.1))
+        XCTAssertNil(select([moved]))
+        XCTAssertNil(select([moved]))
+        XCTAssertEqual(select([moved]), moved, "three frames, not the lost-hand grace first")
+    }
+
     func testShortTrackingGapResumesAtOnce() {
         let right = hand(.right, at: rightPalm)
         for _ in 0..<5 { select([right]) }

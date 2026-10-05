@@ -139,7 +139,8 @@ public struct HandSelectorConfig: Equatable, Sendable {
     /// be taken for the followed hand, so a left hand nearby isn't.
     public var maxFlippedJump = 1.0
     /// Frames without the followed hand (motion blur) keep following it this
-    /// long, so it resumes at once instead of being acquired again.
+    /// long, so it resumes at once instead of being acquired again. A right
+    /// hand seen elsewhere meanwhile is acquired straight away: tracking jumped.
     public var lostGrace = 0.2
 
     public init() {}
@@ -157,6 +158,10 @@ public struct HandSelector: Sendable {
 
     private var followed: (palm: Vec2, lastRight: Double, lastSeen: Double)?
     private var candidate: (palm: Vec2, frames: Int)?
+    /// The hand the last `select` returned was just acquired rather than
+    /// followed from an earlier frame, so it may be anywhere: whatever tracked
+    /// the old hand's motion should start over.
+    public private(set) var isNewHand = false
 
     public init(config: HandSelectorConfig = HandSelectorConfig()) {
         self.config = config
@@ -168,6 +173,7 @@ public struct HandSelector: Sendable {
     }
 
     public mutating func select(_ hands: [HandSample], at t: Double, locked: Bool) -> HandSample? {
+        isNewHand = false
         let usable = hands.filter { $0.palmCenter != nil && $0.handSize != nil }
 
         if let f = followed {
@@ -185,7 +191,7 @@ public struct HandSelector: Sendable {
                     followed = (hand.palmCenter!, f.lastRight, t)
                     return locked ? hand : nil
                 }
-            } else if t - f.lastSeen <= config.lostGrace {
+            } else if t - f.lastSeen <= config.lostGrace, !usable.contains(where: { $0.chirality == .right }) {
                 followed = f
                 return nil
             }
@@ -204,6 +210,7 @@ public struct HandSelector: Sendable {
         if frames >= config.acquireFrames {
             candidate = nil
             followed = (palm, t, t)
+            isNewHand = true
             return pick
         }
         candidate = (palm, frames)
