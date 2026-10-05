@@ -23,6 +23,10 @@ final class InputDriver {
     private var momentum = MomentumScroller()
     private var momentumPosted = false
     private var scrollRemainder = Vec2.zero
+    /// The window server applies the system natural-scrolling inversion to
+    /// posted continuous scroll events, so deltas are pre-inverted to make the
+    /// content move the way the engine asked.
+    private var deviceSign: Int32 = 1
 
     /// Time constant for easing the pointer to its target.
     private let pointerTau = 0.022
@@ -148,18 +152,19 @@ final class InputDriver {
     /// (began, ended) followed by momentum events the app can interrupt.
     private func fling(_ velocity: Vec2) {
         if momentumPosted {
-            postScroll(.zero, phase: nil, momentum: .end)
+            postScroll((0, 0), phase: nil, momentum: .end)
             momentumPosted = false
         }
         momentum.fling(velocity)
         scrollRemainder = .zero
+        deviceSign = Permissions.systemNaturalScrolling ? -1 : 1
         postScroll(integerScroll(momentum.step(tickInterval)), phase: .began, momentum: .none)
-        postScroll(.zero, phase: .ended, momentum: .none)
+        postScroll((0, 0), phase: .ended, momentum: .none)
         ensureTimer()
     }
 
     private func stopMomentum() {
-        if momentumPosted { postScroll(.zero, phase: nil, momentum: .end) }
+        if momentumPosted { postScroll((0, 0), phase: nil, momentum: .end) }
         momentumPosted = false
         momentum.stop()
         scrollRemainder = .zero
@@ -174,16 +179,13 @@ final class InputDriver {
 
     private func postScroll(_ d: (x: Int32, y: Int32), phase: ScrollPhase?, momentum: MomentumPhase) {
         guard let e = CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 2,
-                              wheel1: d.y, wheel2: d.x, wheel3: 0) else { return }
+                              wheel1: d.y * deviceSign, wheel2: d.x * deviceSign, wheel3: 0) else { return }
         e.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
         e.setIntegerValueField(.scrollWheelEventScrollPhase, value: phase?.rawValue ?? 0)
         e.setIntegerValueField(.scrollWheelEventMomentumPhase, value: momentum.rawValue)
         e.post(tap: .cghidEventTap)
     }
 
-    private func postScroll(_ d: Vec2, phase: ScrollPhase?, momentum: MomentumPhase) {
-        postScroll((Int32(d.x), Int32(d.y)), phase: phase, momentum: momentum)
-    }
 
     // MARK: - Timer
 
@@ -222,7 +224,7 @@ final class InputDriver {
                 postScroll(d, phase: nil, momentum: .continue)
             }
             if !momentum.isActive {
-                postScroll(.zero, phase: nil, momentum: .end)
+                postScroll((0, 0), phase: nil, momentum: .end)
                 momentumPosted = false
             }
         }

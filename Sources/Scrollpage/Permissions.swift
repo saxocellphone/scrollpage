@@ -30,9 +30,10 @@ enum Permissions {
         if let url = URL(string: string) { NSWorkspace.shared.open(url) }
     }
 
-    /// The system "Natural scrolling" setting, used as the initial default.
+    /// The current system "Natural scrolling" setting, read fresh each time.
     static var systemNaturalScrolling: Bool {
-        let global = UserDefaults.standard.persistentDomain(forName: UserDefaults.globalDomain)
-        return (global?["com.apple.swipescrolldirection"] as? Bool) ?? true
+        CFPreferencesAppSynchronize(kCFPreferencesAnyApplication)
+        let value = CFPreferencesCopyAppValue("com.apple.swipescrolldirection" as CFString, kCFPreferencesAnyApplication)
+        return (value as? Bool) ?? true
     }
 }
