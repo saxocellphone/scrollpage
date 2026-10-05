@@ -31,6 +31,23 @@ struct HandPose {
     var pinchRatio = 0.8
     /// Middle, ring and little fingers extended (index too unless pinching).
     var fingersOpen = true
+    /// Fingers fanned apart and the thumb stretched out to the side.
+    var spread = false
+    /// Thumb folded across the palm.
+    var thumbTucked = false
+    /// Fingers (named by their knuckle) curled even when the others are open.
+    var folded: Set<HandJoint> = []
+    /// Joints reported with too little confidence to use.
+    var hidden: Set<HandJoint> = []
+    /// Rotation of the whole hand about the palm, degrees, clockwise on screen.
+    var tilt = 0.0
+
+    /// The control toggle pose: five fingers spread, palm up and facing the camera.
+    static var raisedPalm: HandPose {
+        var pose = HandPose()
+        pose.spread = true
+        return pose
+    }
 }
 
 /// Builds plausible 21-joint hands for a given pose, with per-joint noise.
@@ -55,12 +72,15 @@ struct SyntheticHand {
         for (j, dx) in mcps { joints[j] = p + Vec2(dx * s, 0) }
         joints[.wrist] = joints[.middleMCP]! + Vec2(0, s)
 
+        let fan: [HandJoint: Double] = [.indexMCP: -12, .middleMCP: -4, .ringMCP: 4, .littleMCP: 12]
         func finger(_ mcp: HandJoint, _ pip: HandJoint, _ dip: HandJoint, _ tip: HandJoint, open: Bool) {
             let base = joints[mcp]!
-            if open {
-                joints[pip] = base + Vec2(0, -0.45 * s)
-                joints[dip] = base + Vec2(0, -0.70 * s)
-                joints[tip] = base + Vec2(0, -0.90 * s)
+            if open && !pose.folded.contains(mcp) {
+                let angle = (pose.spread ? fan[mcp]! : 0) * .pi / 180
+                let up = Vec2(sin(angle), -cos(angle)) * s
+                joints[pip] = base + up * 0.45
+                joints[dip] = base + up * 0.70
+                joints[tip] = base + up * 0.90
             } else {
                 joints[pip] = base + Vec2(0, -0.35 * s)
                 joints[dip] = base + Vec2(0, -0.15 * s)
@@ -83,14 +103,31 @@ struct SyntheticHand {
 
         let wrist = joints[.wrist]!
         joints[.thumbCMC] = wrist + Vec2(-0.35 * s, -0.25 * s)
-        joints[.thumbMP] = wrist + Vec2(-0.60 * s, -0.50 * s)
-        joints[.thumbIP] = wrist + Vec2(-0.75 * s, -0.70 * s)
-        joints[.thumbTip] = joints[.indexTip]! + Vec2(-pose.pinchRatio * s, 0)
+        if !pinching && pose.thumbTucked {
+            joints[.thumbMP] = wrist + Vec2(-0.45 * s, -0.55 * s)
+            joints[.thumbIP] = wrist + Vec2(-0.30 * s, -0.80 * s)
+            joints[.thumbTip] = joints[.indexMCP]! + Vec2(0.15 * s, 0.25 * s)
+        } else if !pinching && pose.spread {
+            joints[.thumbMP] = wrist + Vec2(-0.65 * s, -0.45 * s)
+            joints[.thumbIP] = wrist + Vec2(-0.85 * s, -0.60 * s)
+            joints[.thumbTip] = wrist + Vec2(-1.00 * s, -0.75 * s)
+        } else {
+            joints[.thumbMP] = wrist + Vec2(-0.60 * s, -0.50 * s)
+            joints[.thumbIP] = wrist + Vec2(-0.75 * s, -0.70 * s)
+            joints[.thumbTip] = joints[.indexTip]! + Vec2(-pose.pinchRatio * s, 0)
+        }
+
+        let angle = pose.tilt * .pi / 180
+        func rotate(_ v: Vec2) -> Vec2 {
+            let d = v - p
+            return p + Vec2(d.x * cos(angle) - d.y * sin(angle), d.x * sin(angle) + d.y * cos(angle))
+        }
 
         var points: [HandJoint: JointPoint] = [:]
         let shift = Vec2(noise.gaussian(commonSigma), noise.gaussian(commonSigma))
         for (j, v) in joints.sorted(by: { $0.key.rawValue < $1.key.rawValue }) {
-            points[j] = JointPoint(v + shift + Vec2(noise.gaussian(sigma), noise.gaussian(sigma)), confidence: 0.9)
+            points[j] = JointPoint(rotate(v) + shift + Vec2(noise.gaussian(sigma), noise.gaussian(sigma)),
+                                   confidence: pose.hidden.contains(j) ? 0.1 : 0.9)
         }
         return HandSample(points)
     }
@@ -104,6 +141,9 @@ final class Rig {
     var t = 100.0
     let dt: Double
     private(set) var outputs: [(t: Double, output: GestureOutput)] = []
+    /// Frames on which the raised-palm toggle fired, with the new control state.
+    private(set) var toggles: [(t: Double, on: Bool)] = []
+    private(set) var progress: [(t: Double, value: Double)] = []
 
     init(settings: MotionSettings = MotionSettings(), seed: UInt64 = 42, sigma: Double = 0.0015,
          commonSigma: Double = 0, fps: Double = 60) {
@@ -128,7 +168,15 @@ final class Rig {
             update?(Double(i) / Double(frames), &pose)
             let sample = visible ? hand.sample(pose) : nil
             for o in engine.process(sample, at: t) { outputs.append((t, o)) }
+            let snapshot = engine.snapshot
+            if snapshot.toggled { toggles.append((t, snapshot.controlOn)) }
+            progress.append((t, snapshot.toggleProgress))
         }
+    }
+
+    /// The menu switch.
+    func setControl(_ on: Bool) {
+        for o in engine.setControl(on: on) { outputs.append((t, o)) }
     }
 
     func hold(_ duration: Double) { run(duration) }
@@ -148,7 +196,11 @@ final class Rig {
         }
     }
 
-    func clearOutputs() { outputs.removeAll() }
+    func clearOutputs() {
+        outputs.removeAll()
+        toggles.removeAll()
+        progress.removeAll()
+    }
 
     var clicks: [Int] {
         outputs.compactMap { if case let .click(c) = $0.output { return c } else { return nil } }

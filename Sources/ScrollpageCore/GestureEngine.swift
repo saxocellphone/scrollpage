@@ -44,6 +44,12 @@ public struct GestureSnapshot: Equatable, Sendable {
     /// The pointer displacement this frame would produce if the hand were
     /// pinching. Used by diagnostics to measure drift of a still hand.
     public var potentialDelta = Vec2.zero
+    /// Gestures drive the pointer. When false only the toggle is watched.
+    public var controlOn = true
+    /// Progress (0...1) of a raised-palm hold toward toggling control.
+    public var toggleProgress = 0.0
+    /// The raised-palm toggle fired on this frame; `controlOn` is the new state.
+    public var toggled = false
 
     public init() {}
 }
@@ -64,6 +70,9 @@ public struct GestureTiming: Equatable, Sendable {
     public var flickAfterRelease = 0.25
     /// A newly acquired hand must be tracked this long before it can flick.
     public var flickAfterAcquire = 0.15
+    /// After a toggle, no flick until the hand has left the raised palm for this
+    /// long and come to rest, so lowering the hand doesn't scroll.
+    public var flickAfterToggle = 0.4
     /// Window over which hand speed is measured for acceleration.
     public var speedWindow = 0.08
 
@@ -78,6 +87,8 @@ public struct GestureTiming: Equatable, Sendable {
 /// - Pinch and hold still, then move, drags.
 /// - A flick of the open hand starts a momentum scroll; a pinch catches it.
 /// - An open hand, or no hand, is a lifted finger: nothing moves.
+/// - A raised palm, five fingers spread, held still for a second turns control
+///   off or back on. While off, nothing but that toggle is recognized.
 ///
 /// Pure and deterministic: feed it samples with their capture timestamps.
 public final class GestureEngine {
@@ -87,10 +98,12 @@ public final class GestureEngine {
     public var timing: GestureTiming
     public private(set) var acceleration: PointerAcceleration
     public private(set) var snapshot = GestureSnapshot()
+    public private(set) var controlOn = true
 
     public var pinch = PinchDetector()
     public var filter = OneEuroFilter2D()
     public var flick = FlickDetector()
+    public var toggle = ToggleGestureDetector()
 
     private struct Touch {
         var start: Double
@@ -114,6 +127,8 @@ public final class GestureEngine {
     /// A touch only begins after the fingers have been seen apart, so a hand
     /// that arrives already closed (or a fist read as a pinch) never grabs the pointer.
     private var pinchArmed = false
+    /// End of the post-toggle flick hold-off; infinite while the palm is still raised.
+    private var flickHoldoff: Double?
 
     public init(settings: MotionSettings = MotionSettings(), timing: GestureTiming = GestureTiming()) {
         self.settings = settings
@@ -128,6 +143,16 @@ public final class GestureEngine {
         return out
     }
 
+    /// Turns control on or off from outside (the menu). Turning it off ends any
+    /// touch without clicking; with no touch down, a touchBegan/touchEnded pair
+    /// catches any glide, like a finger landing on the pad.
+    public func setControl(on: Bool) -> [GestureOutput] {
+        var out: [GestureOutput] = []
+        applyControl(on, at: lastSeen ?? 0, &out)
+        snapshot.controlOn = controlOn
+        return out
+    }
+
     public func process(_ hand: HandSample?, at t: Double) -> [GestureOutput] {
         var out: [GestureOutput] = []
         guard let hand, let palm = hand.palmCenter, let rawSize = hand.handSize else {
@@ -135,6 +160,9 @@ public final class GestureEngine {
                 loseHand(at: t, &out)
             }
             snapshot.handVisible = false
+            snapshot.toggled = false
+            snapshot.toggleProgress = toggle.progress
+            snapshot.controlOn = controlOn
             return out
         }
 
@@ -161,7 +189,23 @@ public final class GestureEngine {
         let pinching = pinch.update(ratio)
         if let ratio, ratio > pinch.releaseRatio { pinchArmed = true }
 
-        if pinching && !wasPinching && pinchArmed {
+        let toggled = toggle.update(hand, handSize: size, position: filtered, speed: speed, at: t)
+        if toggled {
+            applyControl(!controlOn, at: t, &out)
+            flickHoldoff = .infinity
+        }
+        if let until = flickHoldoff {
+            if until == .infinity, !toggle.inPose {
+                flickHoldoff = t + timing.flickAfterToggle
+            } else if t >= until {
+                flickHoldoff = nil
+                flick.requireRest()
+            }
+        }
+
+        if !controlOn || toggled {
+            // Only the toggle is watched.
+        } else if pinching && !wasPinching && pinchArmed {
             pinchArmed = false
             touch = Touch(start: t, origin: filtered)
             flick.reset()
@@ -185,6 +229,7 @@ public final class GestureEngine {
         } else if !pinching && touch == nil {
             let mayFlick = t - lastRelease >= timing.flickAfterRelease
                 && t - (trackedSince ?? t) >= timing.flickAfterAcquire
+                && flickHoldoff == nil
             if let f = flick.update(position: virtual, at: t, canStart: mayFlick && hand.isOpenHand) {
                 out.append(fling(for: f))
             }
@@ -199,7 +244,26 @@ public final class GestureEngine {
         snapshot.handSize = size
         snapshot.speed = speed
         snapshot.potentialDelta = pointerDelta
+        snapshot.controlOn = controlOn
+        snapshot.toggleProgress = toggle.progress
+        snapshot.toggled = toggled
         return out
+    }
+
+    private func applyControl(_ on: Bool, at t: Double, _ out: inout [GestureOutput]) {
+        guard on != controlOn else { return }
+        controlOn = on
+        if !on {
+            if touch == nil {
+                out += [.touchBegan, .touchEnded]
+            } else {
+                endTouch(at: t, allowClick: false, &out)
+            }
+            lastClick = nil
+        }
+        pinchArmed = false
+        flick.reset()
+        flick.requireRest()
     }
 
     /// Speed over the last ~80 ms of filtered motion. A per-frame difference is
@@ -242,6 +306,8 @@ public final class GestureEngine {
         pinch.reset()
         pinchArmed = false
         flick.reset()
+        toggle.handLost(at: t)
+        flickHoldoff = nil
         filter.reset()
         history.removeAll()
         trackedSince = nil
@@ -250,5 +316,6 @@ public final class GestureEngine {
         previousFiltered = nil
         handSize = nil
         snapshot = GestureSnapshot()
+        snapshot.controlOn = controlOn
     }
 }
