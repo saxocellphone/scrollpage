@@ -18,39 +18,74 @@ public enum TouchKind: String, Equatable, Sendable {
     }
 }
 
+/// Fingertip distance limits for a three-finger touch, per pair.
+public struct ThreeFingerLimits: Equatable, Sendable {
+    /// Thumb to index tip, and thumb to middle tip.
+    public var thumb: Double
+    /// Index to middle tip: side by side on the thumb, they stay a fingertip
+    /// apart, so this is wider.
+    public var indexMiddle: Double
+
+    public init(thumb: Double, indexMiddle: Double) {
+        self.thumb = thumb
+        self.indexMiddle = indexMiddle
+    }
+}
+
 /// Contact thresholds in hand sizes (wrist to middle knuckle).
 ///
-/// Measured on a 1080p USB webcam at 30 fps (four recordings, 875 hand frames):
-/// fingertips that touch read 0.026 median and 0.042 at the 98th percentile
-/// while a pinch is held, fingertips hovering just apart 0.13 at the 10th
-/// percentile and 0.19 median, with almost nothing in between. Entering below
-/// the touching cluster's ceiling and leaving inside the empty gap means a
-/// near-touch never counts and a held touch never flickers.
+/// From the user's two `--calibrate-pinch` runs on a 1080p USB webcam at 30 fps
+/// (settled frames, after each step's first 1.5 s): a held thumb–index touch
+/// reads 0.05–0.07 median with its 90th percentile near 0.10, while hovering a
+/// hair apart reads 0.10 median at its tightest; three fingertips held together
+/// read thumb–index and thumb–middle under 0.15 and index–middle 0.15–0.21.
+/// Earlier recordings agree (touching 0.026 median, hovering 0.13 at the 10th
+/// percentile). Entering below where hovering starts and leaving above where
+/// touching ends means a near-touch never counts and a held touch never
+/// flickers.
 public struct TouchThresholds: Equatable, Sendable {
-    /// Thumb and index tips touch below this.
-    public var pinchEnter = 0.06
+    /// Thumb and index tips touch below this. 0.09 already starts on the
+    /// tightest hover.
+    public var pinchEnter = 0.08
     /// A pinch lets go above this.
-    public var pinchExit = 0.10
+    public var pinchExit = 0.12
     /// Above this the fingers are parting, so the pointer stops and letting go
     /// can't move it.
-    public var pinchMoveMax = 0.08
+    public var pinchMoveMax = 0.10
     /// A plain pinch needs the middle tip at least this far from the thumb and
-    /// index tips. 93 % of touching frames in the recordings clear it.
-    public var middleApart = 0.22
-    /// Thumb, index and middle tips all within this of each other touch. Three
-    /// tips can't meet at one point, so this is wider than `pinchEnter`; in
-    /// ordinary use no three consecutive frames came this close. Between it and
-    /// `middleApart` neither touch can start.
-    public var threeEnter = 0.12
-    public var threeExit = 0.16
-    public var threeMoveMax = 0.14
-    /// Fingertips seen with less confidence don't count.
-    public var minTipConfidence = 0.5
+    /// index tips. Not below `threeEnter.thumb`, so the two poses can't
+    /// overlap (on the boundary itself, three-finger wins).
+    public var middleApart = 0.18
+    /// Thumb, index and middle tips touch when every pair is within these.
+    /// Three tips can't meet at one point, so these are wider than `pinchEnter`.
+    public var threeEnter = ThreeFingerLimits(thumb: 0.18, indexMiddle: 0.26)
+    public var threeExit = ThreeFingerLimits(thumb: 0.22, indexMiddle: 0.32)
+    public var threeMoveMax = ThreeFingerLimits(thumb: 0.20, indexMiddle: 0.29)
+    /// To start, the thumb tip must also be within this of the nearer of the
+    /// index and middle tips: it touches at least one. Held together, the
+    /// nearer one read 0.09 median (0.115 at the 95th percentile) in
+    /// calibration, while a hand closing between pinches, index and middle side
+    /// by side, keeps the thumb 0.14 from both.
+    public var threeThumbContact = 0.12
+    /// Thumb and index tips seen with less confidence don't count.
+    public var minTipConfidence = 0.4
+    /// Nor does a middle tip seen with less. It's often half hidden behind
+    /// the thumb in the three-finger pose (0.37 median in calibration).
+    public var minMiddleTipConfidence = 0.3
     /// Nor do frames whose hand size comes from joints seen with less.
     public var minSizeConfidence = 0.3
     /// Consecutive frames a touch pose must hold before the touch begins
     /// (0.1 s at 30 fps).
     public var confirmFrames = 3
+    /// Frames off the pose but still inside the exit threshold that
+    /// confirmation tolerates without starting over.
+    public var confirmNoiseFrames = 2
+    /// A three-finger touch given up because its fingertips couldn't be read
+    /// leaves the fingers armed, so the scroll resumes once they can be: the
+    /// middle tip, half hidden behind the thumb, often drops out, while thumb
+    /// and index stay too close to count as seen apart. (A pinch that resumed
+    /// like this would click when let go after a long hold.)
+    public var rearmThreeFingerAfterUnreadable = true
     /// Consecutive frames clearly apart before a touch ends.
     public var releaseFrames = 2
     /// During a touch, frames that can't be read (fingertips hidden or
@@ -95,10 +130,11 @@ public struct TouchMeasure: Equatable, Sendable {
         self.curled = curled
     }
 
-    /// The largest of the three fingertip distances.
-    public var threeSpread: Double? {
+    /// Every pair of the three fingertips is within `limits`; nil when one
+    /// distance is missing.
+    public func threeWithin(_ limits: ThreeFingerLimits) -> Bool? {
         guard let a = thumbIndex, let b = thumbMiddle, let c = indexMiddle else { return nil }
-        return max(a, b, c)
+        return a <= limits.thumb && b <= limits.thumb && c <= limits.indexMiddle
     }
 
     /// The middle tip's distance to the nearer of the thumb and index tips.
@@ -108,13 +144,14 @@ public struct TouchMeasure: Equatable, Sendable {
     }
 
     public init(_ hand: HandSample, handSize size: Double, thresholds: TouchThresholds = TouchThresholds()) {
-        func confident(_ j: HandJoint) -> Bool { (hand[j]?.confidence ?? 0) >= thresholds.minTipConfidence }
+        func confident(_ j: HandJoint, _ minimum: Double) -> Bool { (hand[j]?.confidence ?? 0) >= minimum }
         thumbIndex = hand.ratio(.thumbTip, .indexTip, handSize: size)
         thumbMiddle = hand.ratio(.thumbTip, .middleTip, handSize: size)
         indexMiddle = hand.ratio(.indexTip, .middleTip, handSize: size)
-        readable = thumbIndex != nil && confident(.thumbTip) && confident(.indexTip)
+        readable = thumbIndex != nil
+            && confident(.thumbTip, thresholds.minTipConfidence) && confident(.indexTip, thresholds.minTipConfidence)
             && (hand.handSizeConfidence ?? 0) >= thresholds.minSizeConfidence
-        middleReadable = readable && thumbMiddle != nil && confident(.middleTip)
+        middleReadable = readable && thumbMiddle != nil && confident(.middleTip, thresholds.minMiddleTipConfidence)
         for finger in Finger.allCases {
             switch hand.extensionReading(finger, thresholds: thresholds.fingers) {
             case .extended: extended.insert(finger)
@@ -134,9 +171,12 @@ public enum TouchEvent: Equatable, Sendable {
 
 /// Decides when fingertips touch.
 ///
-/// A touch begins only after the thumb and index tips have been seen apart, and
-/// then showed a touch pose on `confirmFrames` frames without leaving the exit
-/// threshold or becoming unreadable in between. A touch pose includes the
+/// A touch begins only after the thumb and index tips have been seen apart (the
+/// frame a touch lets go counts), and then showed a touch pose on
+/// `confirmFrames` frames, with at most `confirmNoiseFrames` in between that
+/// stay inside the exit threshold and none that leave it or can't be read. A
+/// three-finger touch given up because its tips couldn't be read may resume
+/// without parting them. A touch pose includes the
 /// fingers that stay off the pad (`TouchKind.liftedFingers`) being extended.
 /// Once it begins, its kind is locked until it ends: a pinch can't turn into a
 /// three-finger touch or back. If one of the lifted fingers curls, the touch
@@ -154,6 +194,7 @@ public struct TouchDetector: Sendable {
     public private(set) var fingers: FingerExtensionTracker
 
     private var pendingFrames = 0
+    private var pendingNoise = 0
     private var releaseCount = 0
     private var unreadableSince: Double?
     private var curledSince: Double?
@@ -173,6 +214,7 @@ public struct TouchDetector: Sendable {
         active = nil
         pending = nil
         pendingFrames = 0
+        pendingNoise = 0
         releaseCount = 0
         unreadableSince = nil
         curledSince = nil
@@ -193,7 +235,8 @@ public struct TouchDetector: Sendable {
     /// The touch pose this frame shows, ignoring confirmation and arming.
     public func pose(_ m: TouchMeasure) -> TouchKind? {
         guard m.readable, let ti = m.thumbIndex else { return nil }
-        if m.middleReadable, let spread = m.threeSpread, spread <= thresholds.threeEnter {
+        if m.middleReadable, m.threeWithin(thresholds.threeEnter) == true,
+           let tm = m.thumbMiddle, min(ti, tm) <= thresholds.threeThumbContact {
             return TouchKind.threeFinger.liftedFingers.isSubset(of: m.extended) ? .threeFinger : nil
         }
         if ti <= thresholds.pinchEnter, m.middleReadable, let gap = m.middleGap, gap >= thresholds.middleApart {
@@ -222,6 +265,7 @@ public struct TouchDetector: Sendable {
                 unreadableSince = since
                 if t - since > thresholds.unreadableGrace {
                     endTouch()
+                    armed = kind == .threeFinger && thresholds.rearmThreeFingerAfterUnreadable
                     return .ended(kind, lifted: false)
                 }
                 return nil
@@ -245,28 +289,34 @@ public struct TouchDetector: Sendable {
             releaseCount += 1
             if releaseCount >= thresholds.releaseFrames {
                 endTouch()
+                armIfApart(m)
                 return .ended(kind, lifted: true)
             }
             return nil
         }
 
-        if m.readable, let ti = m.thumbIndex, ti > thresholds.pinchExit { armed = true }
+        armIfApart(m)
         let kind = armed ? pose(m) : nil
         if let kind, kind == pending {
             pendingFrames += 1
-        } else if kind == nil, let p = pending, contact(p, m)?.inside == true,
-                  p.liftedFingers.isSubset(of: m.extended) {
+        } else if kind == nil, let p = pending, pendingNoise < thresholds.confirmNoiseFrames,
+                  contact(p, m)?.inside == true, p.liftedFingers.isSubset(of: m.extended) {
             // A noisy frame still inside the exit threshold neither counts
-            // toward the touch nor starts the count over.
+            // toward the touch nor starts the count over. More than a few
+            // would let a hover that brushes the threshold now and then add
+            // up to a touch.
+            pendingNoise += 1
             return nil
         } else {
             pending = kind
             pendingFrames = kind == nil ? 0 : 1
+            pendingNoise = 0
         }
         guard let kind, pendingFrames >= thresholds.confirmFrames else { return nil }
         active = kind
         pending = nil
         pendingFrames = 0
+        pendingNoise = 0
         armed = false
         return .began(kind)
     }
@@ -279,9 +329,13 @@ public struct TouchDetector: Sendable {
             guard m.readable, let ti = m.thumbIndex else { return nil }
             return (ti <= thresholds.pinchExit, ti <= thresholds.pinchMoveMax)
         case .threeFinger:
-            guard m.middleReadable, let spread = m.threeSpread else { return nil }
-            return (spread <= thresholds.threeExit, spread <= thresholds.threeMoveMax)
+            guard m.middleReadable, let inside = m.threeWithin(thresholds.threeExit) else { return nil }
+            return (inside, m.threeWithin(thresholds.threeMoveMax) == true)
         }
+    }
+
+    private mutating func armIfApart(_ m: TouchMeasure) {
+        if m.readable, let ti = m.thumbIndex, ti > thresholds.pinchExit { armed = true }
     }
 
     private mutating func endTouch() {

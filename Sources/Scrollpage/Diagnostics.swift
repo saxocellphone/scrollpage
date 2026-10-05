@@ -5,11 +5,14 @@ import ScrollpageCore
 /// `Scrollpage --diagnose [seconds] [--record file.jsonl]`
 /// `Scrollpage --diagnose --replay file.jsonl`
 /// `Scrollpage --calibrate-pinch [--record file.jsonl]`
+/// `Scrollpage --calibrate-pinch --replay file.jsonl`
 ///
 /// Runs the camera, Vision and the real gesture engine headless (no events are
 /// posted) and prints frame rate, latency, tracking quality and how far a still
 /// hand would drift the pointer. Calibration walks through labelled poses and
-/// reports the fingertip distances that touching and hovering produce.
+/// reports the fingertip distances that touching and hovering produce;
+/// replaying a calibration recording with `--diagnose` also shows what the
+/// engine did in each pose.
 enum Diagnostics {
     static func run(arguments: [String]) -> Never {
         var seconds = 10.0
@@ -148,6 +151,8 @@ enum Diagnostics {
         let engine = GestureEngine(settings: savedSettings)
         var selector = HandSelector()
         let collector = Collector(recordPath: nil)
+        var poses = PoseTally()
+        var previousLabel: String?
         var strokeCount = 0
         for line in text.split(separator: "\n") {
             guard let data = line.data(using: .utf8),
@@ -155,7 +160,13 @@ enum Diagnostics {
                   let t = object["t"] as? Double else { continue }
             let hands = decodeHands(object)
             let hand = selector.select(hands, at: t, locked: engine.isEngaged)
-            let outputs = (selector.isNewHand ? engine.reset() : []) + engine.process(hand, at: t)
+            let label = object["label"] as? String
+            // A calibration step that toggled control off (holding the open
+            // hand still does) mustn't hide what the later steps would do.
+            let stepStarts = label != nil && label != "transition" && (previousLabel ?? "transition") == "transition"
+            previousLabel = label
+            let outputs = (stepStarts ? engine.setControl(on: true) : [])
+                + (selector.isNewHand ? engine.reset() : []) + engine.process(hand, at: t)
             var stroke: StrokeReport?
             if engine.flick.strokeCount != strokeCount {
                 strokeCount = engine.flick.strokeCount
@@ -163,10 +174,81 @@ enum Diagnostics {
             }
             collector.add(FrameReport(time: t, hand: hand, hands: hands, outputs: outputs, snapshot: engine.snapshot,
                                       stats: PipelineStats(), stroke: stroke))
+            if let label {
+                poses.add(label: label, at: t, outputs: outputs, snapshot: engine.snapshot)
+            }
         }
         print("Replayed \(path)")
         collector.printReport(timing: false)
+        poses.printReport()
         exit(0)
+    }
+
+    /// What the engine did during each pose of a `--calibrate-pinch` recording,
+    /// leaving out each step's first `Calibration.settleSeconds` while the hand
+    /// gets into the pose.
+    struct PoseTally {
+        struct Stats {
+            var frames = 0
+            var pinchFrames = 0
+            var threeFrames = 0
+            var offFrames = 0
+            var counts: [String: Int] = [:]
+            var travel = 0.0
+            var scrollTravel = 0.0
+        }
+
+        private(set) var order: [String] = []
+        private(set) var stats: [String: Stats] = [:]
+        private var steps = Calibration.Steps()
+
+        mutating func add(label: String, at t: Double, outputs: [GestureOutput], snapshot: GestureSnapshot) {
+            guard let (pose, settled) = steps.step(label: label, at: t) else { return }
+            if !order.contains(pose) { order.append(pose) }
+            guard settled else { return }
+            var s = stats[pose] ?? Stats()
+            s.frames += 1
+            if snapshot.isTouching { s.pinchFrames += 1 }
+            if snapshot.isScrolling { s.threeFrames += 1 }
+            if !snapshot.controlOn { s.offFrames += 1 }
+            if snapshot.toggled { s.counts["toggle", default: 0] += 1 }
+            for o in outputs {
+                switch o {
+                case .touchBegan where snapshot.isTouching: s.counts["pinch", default: 0] += 1
+                case .scrollBegan: s.counts["three", default: 0] += 1
+                case .click(let n): s.counts["click x\(n)", default: 0] += 1
+                case .pressBegan: s.counts["drag", default: 0] += 1
+                case .fling: s.counts["fling", default: 0] += 1
+                case let .pointerMoved(dx, dy): s.travel += (dx * dx + dy * dy).squareRoot()
+                case let .scrolled(dx, dy): s.scrollTravel += (dx * dx + dy * dy).squareRoot()
+                default: break
+                }
+            }
+            stats[pose] = s
+        }
+
+        func printReport() {
+            guard !order.isEmpty else { return }
+            let wanted = ["touch": "pinch", "three": "three"]
+            print("\nPer pose (after the first \(fmt(Calibration.settleSeconds)) s of each step; control turned back on at each step)")
+            print("  pose     want    frames  pinch held  three held  off   begins / clicks           pointer  scroll")
+            for pose in order {
+                guard let s = stats[pose], s.frames > 0 else { continue }
+                let n = Double(s.frames)
+                let counts = s.counts.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: ", ")
+                print("  " + [
+                    pose.padding(toLength: 7, withPad: " ", startingAt: 0),
+                    (wanted[pose] ?? "none").padding(toLength: 6, withPad: " ", startingAt: 0),
+                    String(format: "%6d", s.frames),
+                    String(format: "%9.0f %%", 100 * Double(s.pinchFrames) / n),
+                    String(format: "%9.0f %%", 100 * Double(s.threeFrames) / n),
+                    String(format: "%3.0f %%", 100 * Double(s.offFrames) / n),
+                    (counts.isEmpty ? "none" : counts).padding(toLength: 24, withPad: " ", startingAt: 0),
+                    String(format: "%5.0f pt", s.travel),
+                    String(format: "%5.0f pt", s.scrollTravel),
+                ].joined(separator: "  "))
+            }
+        }
     }
 
     /// Only touched on the camera queue.
@@ -220,7 +302,7 @@ enum Diagnostics {
 
             let stamp = String(format: "%8.2f s  ", r.time - (firstTime ?? r.time))
             let m = r.snapshot.touch
-            let tips = "tips \(m.thumbIndex.map { fmt($0, 3) } ?? "–")/\(m.threeSpread.map { fmt($0, 3) } ?? "–")"
+            let tips = "tips " + [m.thumbIndex, m.thumbMiddle, m.indexMiddle].map { $0.map { fmt($0, 3) } ?? "–" }.joined(separator: "/")
             for output in r.outputs {
                 switch output {
                 case .touchBegan: print(stamp + "pinch down (\(tips))")
