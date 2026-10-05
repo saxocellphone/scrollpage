@@ -73,6 +73,7 @@ enum Diagnostics {
         let engine = GestureEngine(settings: savedSettings)
         let collector = Collector(recordPath: nil)
         var previousPalm: Vec2?
+        var strokeCount = 0
         for line in text.split(separator: "\n") {
             guard let data = line.data(using: .utf8),
                   let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -87,7 +88,13 @@ enum Diagnostics {
             }
             previousPalm = hand?.palmCenter
             let outputs = engine.process(hand, at: t)
-            collector.add(FrameReport(time: t, hand: hand, outputs: outputs, snapshot: engine.snapshot, stats: PipelineStats()))
+            var stroke: StrokeReport?
+            if engine.flick.strokeCount != strokeCount {
+                strokeCount = engine.flick.strokeCount
+                stroke = engine.flick.lastStroke
+            }
+            collector.add(FrameReport(time: t, hand: hand, outputs: outputs, snapshot: engine.snapshot,
+                                      stats: PipelineStats(), stroke: stroke))
         }
         print("Replayed \(path)")
         collector.printReport(timing: false)
@@ -139,6 +146,7 @@ enum Diagnostics {
         private let toggle = ToggleGestureDetector()
         private var palmFrames = 0
         private var maxToggleProgress = 0.0
+        private var lastBlocked: String?
         private let recorder: FileHandle?
 
         init(recordPath: String?) {
@@ -158,9 +166,19 @@ enum Diagnostics {
             processing.append(r.frameProcessingMs)
             latency.append(r.frameLatencyMs)
 
+            if let stroke = r.stroke {
+                print(String(format: "%8.2f s  ", r.time - (firstTime ?? r.time)) + stroke.summary)
+                counts["stroke: \(stroke.verdict.rawValue)", default: 0] += 1
+            }
+            if let blocked = r.snapshot.flickBlocked, blocked != lastBlocked {
+                print(String(format: "%8.2f s  ", r.time - (firstTime ?? r.time)) + "fast motion, no flick: \(blocked)")
+                counts["blocked: \(blocked.split(separator: "(").first!.trimmingCharacters(in: .whitespaces))", default: 0] += 1
+            }
+            lastBlocked = r.snapshot.flickBlocked
             for o in r.outputs {
                 switch o {
                 case .touchBegan: counts["touch", default: 0] += 1
+                case .catchGlide: counts["catch glide", default: 0] += 1
                 case .click(let n): counts["click x\(n)", default: 0] += 1
                 case .pressBegan: counts["press (drag)", default: 0] += 1
                 case .fling: counts["fling", default: 0] += 1

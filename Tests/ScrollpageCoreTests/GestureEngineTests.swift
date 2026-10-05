@@ -370,4 +370,99 @@ final class GestureEngineFlickTests: XCTestCase {
         let afterFling = rig.outputs.drop { if case .fling = $0.output { return false } else { return true } }
         XCTAssertEqual(afterFling.dropFirst().first?.output, .touchBegan)
     }
+
+    /// The USB webcam runs at 30 fps (25 in low light), so a flick spans only a
+    /// few frames of noisy tracking.
+    func testFlicksAtWebcamFrameRates() {
+        for fps in [25.0, 30.0] {
+            for (distance, duration) in [(0.6, 0.12), (1.0, 0.2), (1.5, 0.3)] {
+                for seed in 1...5 {
+                    let rig = Rig.webcam(seed: UInt64(seed), fps: fps)
+                    rig.hold(0.6)
+                    rig.move(by: Vec2(0, -distance * rig.pose.size), over: duration)
+                    rig.hold(0.6)
+                    let label = "\(fps) fps, \(distance) hu in \(duration) s, seed \(seed)"
+                    XCTAssertEqual(rig.flings.count, 1, label)
+                    XCTAssertLessThan(rig.flings.first?.y ?? 0, 0, label)
+                }
+            }
+        }
+    }
+
+    /// Motion blur at 30 fps can lose the hand for a few frames at the fastest
+    /// point of a flick; gaps within the tracking grace still count.
+    func testFlickSurvivesMotionBlurDropouts() {
+        for dropped in 1...4 {
+            for seed in 1...5 {
+                let rig = Rig.webcam(seed: UInt64(seed), fps: 30)
+                rig.hold(0.6)
+                rig.move(by: Vec2(0, rig.pose.size), over: 0.25, dropped: 3...(2 + dropped))
+                rig.hold(0.6)
+                XCTAssertEqual(rig.flings.count, 1, "\(dropped) frames dropped, seed \(seed)")
+                XCTAssertGreaterThan(rig.flings.first?.y ?? 0, 0)
+            }
+        }
+    }
+
+    func testRejectedStrokesSayWhy() {
+        let rig = Rig.webcam(fps: 30)
+        rig.hold(0.6)
+        rig.move(by: Vec2(0, -0.5 * rig.pose.size), over: 0.3)
+        rig.hold(0.6)
+        XCTAssertEqual(rig.engine.flick.lastStroke?.verdict, .tooSlow)
+
+        rig.move(by: Vec2(0, 2.0 * rig.pose.size), over: 0.7)
+        rig.hold(0.6)
+        XCTAssertEqual(rig.engine.flick.lastStroke?.verdict, .sweep)
+        XCTAssertTrue(rig.flings.isEmpty)
+
+        rig.pose.fingersOpen = false
+        rig.hold(0.3)
+        let step = 0.6 * rig.pose.size / 3.6
+        rig.run(0.12) { _, pose in pose.palm.y -= step }
+        let blocked = rig.engine.snapshot.flickBlocked
+        XCTAssertTrue(blocked?.hasPrefix("hand not open") ?? false, String(describing: blocked))
+        XCTAssertTrue(rig.flings.isEmpty)
+    }
+
+    /// Recorded on the USB webcam: the hand closed into a pinch ~0.1 s after a
+    /// flick and stopped the glide after 15 scroll events.
+    func testPinchRightAfterFlingDoesNotCatchTheGlide() {
+        let rig = Rig.webcam(fps: 30)
+        rig.hold(0.6)
+        rig.move(by: Vec2(0, -0.8 * rig.pose.size), over: 0.15)
+        rig.hold(0.1)
+        rig.pinch(true)
+        rig.hold(0.1)
+        XCTAssertEqual(rig.flings.count, 1)
+        XCTAssertEqual(rig.count(.touchBegan), 1)
+        XCTAssertEqual(rig.count(.catchGlide), 0)
+        rig.pinch(false)
+
+        rig.hold(0.6)
+        rig.move(by: Vec2(0, -0.8 * rig.pose.size), over: 0.15)
+        rig.hold(0.8)
+        rig.clearOutputs()
+        rig.pinch(true)
+        rig.hold(0.1)
+        XCTAssertEqual(rig.outputs.map(\.output).prefix(2), [.catchGlide, .touchBegan], "a later pinch catches the glide")
+    }
+
+    /// Recorded: a vigorous flick (peak ~18 hu/s, 2.9 hu) that began with a
+    /// slow lead-in ran past 0.3 s and was dropped as a sweep.
+    func testVigorousFlickWithSlowLeadInCounts() {
+        func flings(maxFastDuration: Double) -> [Vec2] {
+            let rig = Rig.webcam(fps: 30)
+            rig.engine.flick.config.maxFastDuration = maxFastDuration
+            rig.hold(0.6)
+            let lead = 3.0 * rig.pose.size * rig.dt
+            rig.run(0.2) { _, pose in pose.palm.y += lead }
+            rig.move(by: Vec2(0, 2.6 * rig.pose.size), over: 0.2)
+            rig.hold(0.6)
+            return rig.flings
+        }
+        XCTAssertTrue(flings(maxFastDuration: 0.3).isEmpty, "precondition: this stroke is longer than 0.3 s")
+        XCTAssertEqual(flings(maxFastDuration: FlickConfig().maxFastDuration).count, 1)
+        XCTAssertGreaterThan(flings(maxFastDuration: FlickConfig().maxFastDuration).first?.y ?? 0, 0)
+    }
 }

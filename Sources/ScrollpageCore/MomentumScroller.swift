@@ -21,6 +21,9 @@ public struct MomentumScroller: Sendable {
 
     public var isActive: Bool { velocity.length >= stopSpeed }
 
+    /// The longest a glide can last, from `maxSpeed` down to `stopSpeed`.
+    public var maxGlideDuration: Double { timeConstant * log(maxSpeed / stopSpeed) }
+
     /// Starts a glide. A fling in the same direction as a glide still under way
     /// adds to it, like repeated two-finger flings on a trackpad; any other fling
     /// replaces it.

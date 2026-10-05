@@ -10,7 +10,7 @@ import ScrollpageCore
 /// pointer toward it and integrates the momentum glide, like a trackpad driver.
 final class InputDriver {
     private let queue = DispatchQueue(label: "com.saxocellphone.scrollpage.input", qos: .userInteractive)
-    private let source: CGEventSource?
+    private var source: CGEventSource?
     private var timer: DispatchSourceTimer?
     private var lastTick = 0.0
 
@@ -20,26 +20,41 @@ final class InputDriver {
     private var displays: [CGRect] = []
     private var buttonDown = false
 
-    private var momentum = MomentumScroller()
-    private var momentumPosted = false
-    private var scrollRemainder = Vec2.zero
-    /// The window server applies the system natural-scrolling inversion to
-    /// posted continuous scroll events, so deltas are pre-inverted to make the
-    /// content move the way the engine asked.
-    private var deviceSign: Int32 = 1
+    private var scroller = FlingSequencer()
+    private var systemNaturalScrolling = true
 
     /// Time constant for easing the pointer to its target.
     private let pointerTau = 0.022
     private let tickInterval = 1.0 / 120
 
+    struct ScrollStats {
+        var events = 0
+        var momentumEvents = 0
+        var wheel1: Int64 = 0
+        var wheel2: Int64 = 0
+        var momentumEnded = false
+    }
+
+    private var stats = ScrollStats()
+    /// Counters for the last fling, for diagnostics.
+    var scrollStats: ScrollStats { queue.sync { stats } }
+
     init() {
-        source = CGEventSource(stateID: .hidSystemState)
+        source = Self.makeSource()
+    }
+
+    private static func makeSource() -> CGEventSource? {
+        let source = CGEventSource(stateID: .hidSystemState)
         source?.localEventsSuppressionInterval = 0
+        return source
     }
 
     func setPostingAllowed(_ allowed: Bool) {
         queue.async {
             if !allowed { self.cancelEverything() }
+            // A source made before Accessibility was granted can stay unprivileged.
+            if allowed && !self.postingAllowed { self.source = Self.makeSource() }
+            if allowed != self.postingAllowed { Log.input.notice("posting allowed: \(allowed)") }
             self.postingAllowed = allowed
         }
     }
@@ -54,10 +69,15 @@ final class InputDriver {
     // MARK: - Gesture outputs
 
     private func apply(_ output: GestureOutput) {
-        guard postingAllowed else { return }
+        guard postingAllowed else {
+            if case .fling = output { Log.input.notice("fling dropped: posting not allowed (Accessibility not trusted or paused)") }
+            return
+        }
         switch output {
-        case .touchBegan:
+        case .catchGlide:
+            if scroller.isActive { Log.input.notice("glide caught by touch after \(self.stats.events) scroll events") }
             stopMomentum()
+        case .touchBegan:
             syncToRealCursor()
         case let .pointerMoved(dx, dy):
             target = clampToDisplays(CGPoint(x: target.x + dx, y: target.y + dy))
@@ -145,47 +165,43 @@ final class InputDriver {
 
     // MARK: - Scrolling
 
-    private enum ScrollPhase: Int64 { case began = 1, changed = 2, ended = 4 }
-    private enum MomentumPhase: Int64 { case none = 0, begin = 1, `continue` = 2, end = 3 }
-
     /// A fling is posted the way a trackpad reports one: a short gesture
-    /// (began, ended) followed by momentum events the app can interrupt.
+    /// (began, changed…, ended) followed by momentum events the app can interrupt.
     private func fling(_ velocity: Vec2) {
-        if momentumPosted {
-            postScroll((0, 0), phase: nil, momentum: .end)
-            momentumPosted = false
-        }
-        momentum.fling(velocity)
-        scrollRemainder = .zero
-        deviceSign = Permissions.systemNaturalScrolling ? -1 : 1
-        postScroll(integerScroll(momentum.step(tickInterval)), phase: .began, momentum: .none)
-        postScroll((0, 0), phase: .ended, momentum: .none)
+        systemNaturalScrolling = Permissions.systemNaturalScrolling
+        Log.input.notice("fling vx=\(velocity.x, format: .fixed(precision: 0)) vy=\(velocity.y, format: .fixed(precision: 0)) systemNatural=\(self.systemNaturalScrolling)")
+        let events = scroller.fling(velocity, dt: tickInterval)
+        post(events.filter { $0.momentum == .end })
+        stats = ScrollStats()
+        post(events.filter { $0.momentum != .end })
         ensureTimer()
     }
 
     private func stopMomentum() {
-        if momentumPosted { postScroll((0, 0), phase: nil, momentum: .end) }
-        momentumPosted = false
-        momentum.stop()
-        scrollRemainder = .zero
+        post(scroller.stop())
     }
 
-    private func integerScroll(_ d: Vec2) -> (x: Int32, y: Int32) {
-        let total = d + scrollRemainder
-        let x = total.x.rounded(.towardZero), y = total.y.rounded(.towardZero)
-        scrollRemainder = Vec2(total.x - x, total.y - y)
-        return (Int32(clamping: Int(x)), Int32(clamping: Int(y)))
+    private func post(_ events: [ScrollEvent]) {
+        for event in events { postScroll(event) }
     }
 
-    private func postScroll(_ d: (x: Int32, y: Int32), phase: ScrollPhase?, momentum: MomentumPhase) {
+    private func postScroll(_ s: ScrollEvent) {
+        let w = s.wheels(systemNaturalScrolling: systemNaturalScrolling)
         guard let e = CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 2,
-                              wheel1: d.y * deviceSign, wheel2: d.x * deviceSign, wheel3: 0) else { return }
+                              wheel1: w.wheel1, wheel2: w.wheel2, wheel3: 0) else { return }
         e.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
-        e.setIntegerValueField(.scrollWheelEventScrollPhase, value: phase?.rawValue ?? 0)
-        e.setIntegerValueField(.scrollWheelEventMomentumPhase, value: momentum.rawValue)
+        e.setIntegerValueField(.scrollWheelEventScrollPhase, value: s.phase.rawValue)
+        e.setIntegerValueField(.scrollWheelEventMomentumPhase, value: s.momentum.rawValue)
         e.post(tap: .cghidEventTap)
+        stats.events += 1
+        if s.momentum != .none { stats.momentumEvents += 1 }
+        stats.wheel1 += Int64(w.wheel1)
+        stats.wheel2 += Int64(w.wheel2)
+        if s.momentum == .end {
+            stats.momentumEnded = true
+            Log.input.notice("glide ended: \(self.stats.events) scroll events, wheel1 \(self.stats.wheel1) px, wheel2 \(self.stats.wheel2) px")
+        }
     }
-
 
     // MARK: - Timer
 
@@ -215,21 +231,9 @@ final class InputDriver {
             current = target
         }
 
-        if momentum.isActive {
-            let d = integerScroll(momentum.step(dt))
-            if !momentumPosted {
-                postScroll(d, phase: nil, momentum: .begin)
-                momentumPosted = true
-            } else if d.x != 0 || d.y != 0 {
-                postScroll(d, phase: nil, momentum: .continue)
-            }
-            if !momentum.isActive {
-                postScroll((0, 0), phase: nil, momentum: .end)
-                momentumPosted = false
-            }
-        }
+        if scroller.isActive { post(scroller.tick(dt)) }
 
-        if current == target && !momentum.isActive {
+        if current == target && !scroller.isActive {
             timer?.cancel()
             timer = nil
         }

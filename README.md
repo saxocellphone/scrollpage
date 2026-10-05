@@ -106,8 +106,10 @@ turn Scrollpage back on. Off by gesture is not remembered across launches.
 - **Rendering.** Gestures move a target; a 120 Hz driver eases the real pointer
   toward it (τ ≈ 22 ms), so 30 fps camera frames still give smooth motion.
 - **Scroll events** are posted like a real trackpad: pixel-precise, continuous,
-  with scroll phases (began/ended) followed by momentum phases, so apps that
-  care about momentum (Safari, Chrome, AppKit scroll views) treat them natively.
+  a short gesture (began, changed on the next few frames, ended) followed by
+  momentum phases, so apps that care about momentum (Safari, Chrome, AppKit
+  scroll views) treat them natively. AppKit ignores a gesture with no changed
+  events, and the momentum after it.
 - **Feedback.** A thin ring centered on the pointer's hotspot while the pinch
   is down: it fades in when the finger lands, contracts briefly on click, keeps
   a faint fill while dragging and fades out on lift (opacity only with Reduce
@@ -120,11 +122,13 @@ Requirements: macOS 14 or later, Xcode command line tools (Swift 5.9+), a
 webcam.
 
 ```bash
-make build      # swift build -c release, then build/Scrollpage.app (ad-hoc signed)
+make build      # swift build -c release, then build/Scrollpage.app (locally signed, see below)
 make run        # build and open the app
 make test       # unit tests for the gesture engine
 make install    # copy to /Applications (INSTALL_DIR=... to change)
 make diagnose   # headless camera + engine report (DIAGNOSE_SECONDS=15)
+make check-permissions  # what macOS privacy checks see for build/Scrollpage.app
+make test-scroll        # the app posts one fling at the pointer (VY=-2000)
 make clean
 ```
 
@@ -153,15 +157,31 @@ Gatekeeper notes.
 - **Accessibility**: to move the pointer, click and scroll. Scrollpage shows an
   "Allow Accessibility" pill and a banner until it is granted.
 
-The app is **ad-hoc signed** by default. macOS ties privacy grants to the code
-signature, so **every rebuild invalidates the Accessibility (and possibly
-Camera) grant**: open System Settings > Privacy & Security > Accessibility,
-remove Scrollpage with the minus button, and add the new build again. To avoid
-this, sign with a stable identity:
+macOS ties privacy grants to the app's designated requirement. An ad hoc
+signature's requirement is its cdhash, so with ad hoc signing **every rebuild
+silently loses the Accessibility grant**: System Settings still shows
+Scrollpage switched on, but the new binary is not trusted and every pointer,
+click and scroll event is dropped.
+
+So `make build` signs with **Scrollpage Local Signing**, a self-signed identity
+that `scripts/local-signing.sh` creates on first use in a dedicated keychain
+under this clone's `.git` (shared by its worktrees, never committed; the login
+keychain and trust settings are not touched). The requirement becomes
+`identifier "com.saxocellphone.scrollpage" and certificate leaf = H"…"`, which
+stays the same across rebuilds, so the grant only has to be given once per
+clone. Other options:
 
 ```bash
+make build SIGN_IDENTITY=-   # ad hoc (what CI uses)
 make build SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
 ```
+
+Copies with different signatures (a CI download, an ad hoc build, another
+clone) each need their own grant. If Scrollpage shows "Allow Accessibility"
+while System Settings shows it switched on, click Allow: Scrollpage removes its
+stale entry (`tccutil reset Accessibility com.saxocellphone.scrollpage`) so the
+system prompt can add the running copy, then switch it on. `make
+check-permissions` prints what the running build's signature and trust are.
 
 ## Settings
 
@@ -197,6 +217,20 @@ camera access on behalf of the terminal app.)
 lift at the pointer; `--render-ring states.png [single.png [pills.png]]`
 renders the ring states, and optionally the toggle's status pills, offscreen
 over light and dark backgrounds.
+
+```bash
+make check-permissions        # or: open -W -n --stdout "$(tty)" build/Scrollpage.app --args --check-permissions
+make test-scroll VY=-2000     # content velocity in pt/s, y-down; --vx and --at x,y on the CLI
+log stream --predicate 'subsystem == "com.saxocellphone.scrollpage"'
+```
+
+`--check-permissions` prints `AXIsProcessTrusted`, `CGPreflightPostEventAccess`,
+the cdhash and the designated requirement. `--test-scroll` posts one fling
+through the real input driver, exactly as a detected flick would. Both must be
+launched through `open` to test the app's own grant; run directly from a
+terminal, macOS checks the terminal's grant instead. The log has permission
+changes, every stroke the flick detector judged (and why it was rejected),
+flings and how many scroll events each posted.
 
 ## Project layout
 

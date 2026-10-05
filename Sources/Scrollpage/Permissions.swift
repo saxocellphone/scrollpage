@@ -3,8 +3,12 @@ import ApplicationServices
 import AVFoundation
 
 enum Permissions {
+    /// `AXIsProcessTrusted()` follows System Settings live; Accessibility access
+    /// also lets the window server accept posted events. The
+    /// `CGPreflightPostEventAccess()` answer is cached for the life of the
+    /// process, so requiring it kept posting off after a grant until relaunch.
     static var accessibilityTrusted: Bool {
-        AXIsProcessTrusted() && CGPreflightPostEventAccess()
+        AXIsProcessTrusted() || CGPreflightPostEventAccess()
     }
 
     /// Shows the system prompt that adds Scrollpage to the Accessibility list.

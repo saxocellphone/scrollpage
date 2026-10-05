@@ -231,7 +231,7 @@ final class ControlGatingTests: XCTestCase {
         { output in
             switch output {
             case .pointerMoved, .click, .pressBegan, .fling, .touchBegan: return true
-            case .touchEnded: return false
+            case .touchEnded, .catchGlide: return false
             }
         }
     }
@@ -342,7 +342,7 @@ final class ControlGatingTests: XCTestCase {
         rig.pose.spread = true
         rig.hold(1.1)
         XCTAssertEqual(rig.toggles.map(\.on), [false])
-        XCTAssertEqual(rig.outputs.map(\.output), [.touchBegan, .touchEnded],
+        XCTAssertEqual(rig.outputs.map(\.output), [.catchGlide, .touchBegan, .touchEnded],
                        "a finger landing stops the glide, then lifts")
         XCTAssertTrue(rig.outputs.allSatisfy { $0.t == rig.toggles[0].t })
     }

@@ -11,6 +11,12 @@ if let index = arguments.firstIndex(of: "--render-ring") {
 if let index = arguments.firstIndex(of: "--ring-demo") {
     RingPreview.demo(arguments: Array(arguments[(index + 1)...]))
 }
+if arguments.contains("--check-permissions") {
+    PermissionCheck.runCLI()
+}
+if let index = arguments.firstIndex(of: "--test-scroll") {
+    ScrollTest.run(arguments: Array(arguments[(index + 1)...]))
+}
 
 MainActor.assumeIsolated {
     let app = NSApplication.shared

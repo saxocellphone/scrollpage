@@ -1,8 +1,12 @@
 import Foundation
 
 public enum GestureOutput: Equatable, Sendable {
-    /// Pinch went down: the finger touched the pad. Stops any glide.
+    /// Pinch went down: the finger touched the pad.
     case touchBegan
+    /// Stop the momentum glide. Sent just before `touchBegan` while a glide
+    /// could still be running, unless the pinch comes too soon after the fling
+    /// to be a deliberate catch.
+    case catchGlide
     /// Pointer displacement in screen points (y-down).
     case pointerMoved(dx: Double, dy: Double)
     /// Tap-to-click. `count` is 1, 2 or 3 (double and triple click).
@@ -50,6 +54,8 @@ public struct GestureSnapshot: Equatable, Sendable {
     public var toggleProgress = 0.0
     /// The raised-palm toggle fired on this frame; `controlOn` is the new state.
     public var toggled = false
+    /// Why a fast motion this frame could not start a flick, if it couldn't.
+    public var flickBlocked: String?
 
     public init() {}
 }
@@ -73,6 +79,10 @@ public struct GestureTiming: Equatable, Sendable {
     /// After a toggle, no flick until the hand has left the raised palm for this
     /// long and come to rest, so lowering the hand doesn't scroll.
     public var flickAfterToggle = 0.4
+    /// A pinch this soon after a fling does not stop the glide: on a webcam the
+    /// hand often closes into a pinch ~0.1 s after flicking, which would end the
+    /// scroll almost as soon as it started.
+    public var glideCatchDelay = 0.4
     /// Window over which hand speed is measured for acceleration.
     public var speedWindow = 0.08
 
@@ -122,6 +132,7 @@ public final class GestureEngine {
     private var trackedSince: Double?
     private var lastSeen: Double?
     private var lastRelease = -Double.infinity
+    private var lastFling = -Double.infinity
     private var lastClick: (t: Double, count: Int)?
     private var movedSinceClick = false
     /// A touch only begins after the fingers have been seen apart, so a hand
@@ -144,8 +155,8 @@ public final class GestureEngine {
     }
 
     /// Turns control on or off from outside (the menu). Turning it off ends any
-    /// touch without clicking; with no touch down, a touchBegan/touchEnded pair
-    /// catches any glide, like a finger landing on the pad.
+    /// touch without clicking; with no touch down, it catches any glide like a
+    /// finger landing on the pad and lifting.
     public func setControl(on: Bool) -> [GestureOutput] {
         var out: [GestureOutput] = []
         applyControl(on, at: lastSeen ?? 0, &out)
@@ -185,6 +196,7 @@ public final class GestureEngine {
         let speed = measureSpeed(filtered, at: t)
         let pointerDelta = acceleration.displacement(for: delta, speed: speed)
 
+        var blocked: String?
         let ratio = hand.pinchRatio(handSize: size)
         let wasPinching = pinch.isPinching
         let pinching = pinch.update(ratio)
@@ -210,6 +222,10 @@ public final class GestureEngine {
             pinchArmed = false
             touch = Touch(start: t, origin: filtered)
             flick.reset()
+            let sinceFling = t - lastFling
+            if sinceFling >= timing.glideCatchDelay && sinceFling <= MomentumScroller().maxGlideDuration {
+                out.append(.catchGlide)
+            }
             out.append(.touchBegan)
         } else if !pinching && wasPinching {
             endTouch(at: t, allowClick: true, &out)
@@ -228,10 +244,23 @@ public final class GestureEngine {
             }
             touch = current
         } else if !pinching && touch == nil {
-            let mayFlick = t - lastRelease >= timing.flickAfterRelease
-                && t - (trackedSince ?? t) >= timing.flickAfterAcquire
-                && flickHoldoff == nil
-            if let f = flick.update(position: virtual, at: t, canStart: mayFlick && hand.isOpenHand) {
+            let afterRelease = t - lastRelease >= timing.flickAfterRelease
+            let afterAcquire = t - (trackedSince ?? t) >= timing.flickAfterAcquire
+            let afterToggle = flickHoldoff == nil
+            if !flick.inStroke && speed > flick.config.startSpeed {
+                if !hand.isOpenHand {
+                    blocked = "hand not open (\(hand.extendedFingerCount) fingers)"
+                } else if !afterRelease {
+                    blocked = "just released a pinch"
+                } else if !afterAcquire {
+                    blocked = "hand just appeared"
+                } else if !afterToggle {
+                    blocked = "just toggled control"
+                }
+            }
+            let mayFlick = afterRelease && afterAcquire && afterToggle && hand.isOpenHand
+            if let f = flick.update(position: virtual, at: t, canStart: mayFlick) {
+                lastFling = t
                 out.append(fling(for: f))
             }
         }
@@ -248,6 +277,7 @@ public final class GestureEngine {
         snapshot.controlOn = controlOn
         snapshot.toggleProgress = toggle.progress
         snapshot.toggled = toggled
+        snapshot.flickBlocked = blocked
         return out
     }
 
@@ -256,7 +286,7 @@ public final class GestureEngine {
         controlOn = on
         if !on {
             if touch == nil {
-                out += [.touchBegan, .touchEnded]
+                out += [.catchGlide, .touchBegan, .touchEnded]
             } else {
                 endTouch(at: t, allowClick: false, &out)
             }
