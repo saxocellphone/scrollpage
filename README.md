@@ -23,8 +23,8 @@ alone in the frame.
 | Touch thumb, index **and middle** tips together (ring and little extended) and move | Scroll (two fingers on the pad): the page follows your hand, any direction. Let go while moving and it glides. |
 | Flick an open hand up/down/left/right | Momentum scroll, like a two-finger fling. |
 | Touch while the page glides | Catch the glide (stops it at once). |
-| Fingers apart, open hand, fist, half-closed hand, or hand out of view | Fingers lifted: nothing moves. |
-| Raise a palm, all five fingers spread, hold still ~1 s | Turn gestures off, or back on. |
+| Fingers apart, open hand (spread or not), fist, half-closed hand, or hand out of view | Fingers lifted: nothing moves. |
+| Make a **peace sign** (index and middle up in a V, ring and little curled, thumb folded over them) and hold still ~0.5 s | Turn gestures off, or back on. |
 
 The pointer is relative, like a trackpad: parting the fingers is lifting your
 finger, so you can "clutch" (let go, move the hand back, touch again) to keep
@@ -255,43 +255,68 @@ around doesn't scroll.
 
 ### Turning gestures off and on
 
-When you want to use your hands for something else, hold one up facing the
-camera with all five fingers spread (thumb out too), and keep it still for
-about a second. The status pill says **Gestures off**: nothing moves, clicks or
-scrolls, and Scrollpage only watches for that same pose. Hold it up again for
-**Gestures on**. After 0.3 s of holding, the pill shows "Hold to turn off" (or
-on) with a ring filling up, so you can see it coming and cancel by moving or
-relaxing the hand. Turning off mid-drag releases the button, and a glide in
-progress stops.
+When you want to use your hands for something else, make a **peace sign** with
+the right hand (index and middle up in a V, ring and little curled, the thumb
+folded over them) and hold it still for half a second. The status pill says
+**Gestures off**: nothing moves, clicks or scrolls, and Scrollpage only watches
+for the peace sign. Make it again for **Gestures on**. After a quarter second
+of holding, the pill shows "Hold to turn off" (or on) with a ring filling up,
+so you can see it coming and cancel by moving or relaxing the hand. Turning off
+mid-drag releases the button, and a glide in progress stops. An open palm,
+spread or not, only ever means "finger lifted".
+
+What counts as a peace sign (distances in hand sizes):
+
+| Part | Starts the pose | Keeps it |
+| --- | --- | --- |
+| Index and middle extended, ring and little curled | the `FingerExtensionTracker` readings (two frames to flip) | the same, with its hysteresis |
+| A clear V: index tip to middle tip | ≥ 0.30 and ≥ 12° between the fingers | ≥ 0.24 and ≥ 8° |
+| Both tips past their knuckles along the hand | ≥ 0.35 | ≥ 0.30 |
+| Thumb folded: tip to the ring or little middle joint, or the palm center | ≤ 0.45 | ≤ 0.55 |
+| Thumb clear of the V: tip to the nearer raised tip | ≥ 0.40 | ≥ 0.33 |
+| Thumb not out to the side: tip across the palm from the index knuckle | ≥ 0 | ≥ −0.08 |
+
+The pose must read on 3 frames in a row; once in it, dropouts up to 0.12 s
+are bridged. The geometry is measured in the hand's own frame, so a tilted
+hand works.
 
 Why this pose and these rules:
 
-- **Nothing else uses it, and ordinary hands don't make it.** In three recorded
-  sessions of ordinary use (535 hand frames of pointing, clicking, flicking and
-  resting), not one frame met all four conditions: four fingers extended, thumb
-  out, fingers spread (index tip to little tip at least 0.75 hand lengths) and
-  the hand upright within 35°. Each of the first three conditions matters on its
-  own: without the spread 16 frames would match, without "upright" 4, without
-  four extended fingers 25. A relaxed open hand (fingers together) still just
-  means "finger lifted".
-- **Still, for a second.** The hold restarts if the hand moves faster than 0.4
-  hand lengths per second or wanders more than 0.2. Flicks start at 1.5 and
-  peak above 3.5, so a flick through the pose never toggles, and holding still
-  never flicks.
+- **Nothing else looks like it.** A three-finger scroll has the thumb on the
+  index and middle tips (0.1 away, not 0.4) and the two fingers bent and
+  together (0.20 apart); an OK sign has middle, ring and little up; an open
+  hand has ring and little up; fingers held together have no gap; a pointing
+  finger has the middle curled, and its tip never reaches more than 0.27 past
+  its knuckle. A V with the thumb out or touching a raised fingertip doesn't
+  count either.
+- **Ordinary hands don't make it.** In the seven webcam recordings (about
+  3,500 right-hand frames of pointing, clicking, scrolling, flicking, resting
+  and the calibration poses), no frame is a peace sign. Even with any one of
+  the rules above dropped, the longest still run that passes is 0.20 s, well
+  under the 0.5 s hold. The closest real near-miss is pointing with the thumb
+  tucked (1.2 s still in one session), which only the middle finger's state
+  and reach rule out. The open-palm toggle this replaces fired once in those
+  recordings, during the "hold your hand up, open" calibration step; the peace
+  sign fires never, at any hold from 0.2 to 0.8 s.
+- **Still, for half a second.** The hold restarts if the hand moves faster
+  than 0.4 hand lengths per second or wanders more than 0.15. Flicks start at
+  1.5, and a V isn't an open hand, so it never flicks.
+- **Never during a touch.** While a pinch or three-finger touch is down (or
+  confirming), the pose doesn't count; the hold starts once the fingers lift.
 - **Once per hold.** After a toggle the hand must leave the pose (or the frame)
   for 0.3 s before the next one, and two toggles are at least 1.5 s apart. After
   a toggle, flicks wait until the hand has left the pose for 0.4 s and slowed
   down, so lowering your hand doesn't scroll.
-- **Limits.** A 2D pose can't reliably tell the palm from the back of the hand,
-  so a spread hand facing either way works. The thresholds come from hand
-  proportions and the synthetic tests; there is no recording of real raised
-  palms yet, so check yours with `--diagnose --record` and `--replay` (the
-  "Raised palm" line).
+- **Limits.** None of the recordings has a real peace sign yet, so the V's
+  thresholds come from hand proportions, the synthetic tests and the tucked
+  thumbs seen while pointing (0.21 to 0.31 from the ring and little middle
+  joints). `--calibrate-pinch` now has a peace-sign step that measures yours;
+  `--diagnose` prints a "Peace sign" line.
 
 The gesture and the menu switch are the same on/off state: after the gesture
 the switch shows off, and the switch can turn gestures back on. The difference
 is the camera. Off by gesture, it keeps running, because that is how it sees
-your palm to turn back on. Off from the menu, it stops, so only the menu can
+the peace sign to turn back on. Off from the menu, it stops, so only the menu can
 turn Scrollpage back on. Off by gesture is not remembered across launches.
 
 ## How it feels like a trackpad
@@ -402,7 +427,7 @@ The menu bar popover has an on/off switch and three settings, nothing else:
 
 Scrollpage pauses the camera while the screen sleeps or the user session is
 switched out, and turns it off entirely when switched off from the menu (not
-when turned off by the raised-palm gesture, see above). The camera picker is
+when turned off by the peace sign, see above). The camera picker is
 in the preview window.
 
 ## Diagnostics
@@ -430,16 +455,17 @@ build/Scrollpage.app/Contents/MacOS/Scrollpage --calibrate-pinch --replay calibr
 `--calibrate-pinch` is a guided measurement, about a minute, with a countdown
 before each step: right hand open; thumb and index touching; thumb and index
 just apart, not touching; thumb, index and middle touching; touching with the
-other fingers curled (which must not count); left hand only. Each step records
+other fingers curled (which must not count); a peace sign; left hand only. Each step records
 1.5 s longer than it measures: the report leaves out that first stretch while
 the hand gets into the pose. It prints fingertip distance percentiles for each
-step (each pair for three fingers), how the current thresholds classify each,
+step (each pair for three fingers, the V and thumb measures for the peace
+sign), how the current thresholds classify each,
 suggested thresholds, and whether Vision's left/right labels match the hand
 you used. The frames are saved (to `/tmp` unless `--record` is given); with
 `--replay` it reports on a saved run with the current thresholds, and
 `--diagnose --replay` adds a table of what the engine did in each pose (pinch
-or scroll held, begins, clicks, travel), with control switched back on at each
-step since holding the open hand still toggles it off.
+or scroll held, begins, clicks, toggles, travel), with control switched back
+on at each step since the peace-sign step toggles it off.
 
 `--ring-demo [seconds]` cycles the touch ring through touch, click, drag and
 lift at the pointer; `--render-ring states.png [single.png [pills.png]]`
@@ -466,7 +492,7 @@ flings and how many scroll events each posted.
   `HandSelector` (right hand only), `TouchDetector` (pinch and three-finger
   touch), `FingerExtensionTracker` (the OK sign), `WristRotation` (hand
   angle), `OneEuroFilter2D`, `PointerAcceleration`, `FlickDetector`,
-  `ToggleGestureDetector`, `MomentumScroller`, `FlingSequencer`, and
+  `ToggleGestureDetector` (the peace sign), `MomentumScroller`, `FlingSequencer`, and
   `GestureEngine`, which turns hand samples into trackpad events.
 - `Sources/Scrollpage`: the app: camera + Vision pipeline, CGEvent input
   driver, menu bar popover, status pill, touch ring, onboarding, diagnostics.
@@ -475,7 +501,7 @@ flings and how many scroll events each posted.
   and a near-touch hand that never moves the pointer, the OK sign and curled
   fingers, wrist rotation and its drift, three-finger scroll and
   its glide, left/right hand selection, flicks and the false-flick cases, the
-  on/off toggle and what it blocks, momentum, filter and curve properties).
+  peace-sign toggle, its near-misses and what it blocks, momentum, filter and curve properties).
 
 ## Re-testing after an update
 
@@ -495,8 +521,13 @@ flings and how many scroll events each posted.
 6. Touch thumb, index and middle (the tips turn cyan) and move up, down and
    sideways: the page follows. Let go while moving: it glides; touch again: it
    stops. The pointer stays put throughout.
-7. Do the same with the left hand alone: nothing happens.
-8. Optional: `build/Scrollpage.app/Contents/MacOS/Scrollpage --calibrate-pinch`
+7. Make a peace sign and hold it still: after a quarter second the pill shows
+   "Hold to turn off" with a ring, then **Gestures off**; pinching does nothing.
+   Relax, make it again: **Gestures on**. Hold an open hand up, fingers spread,
+   for a few seconds: nothing happens. A V with the thumb out, or with index and
+   middle together, doesn't toggle either.
+8. Do the same with the left hand alone: nothing happens.
+9. Optional: `build/Scrollpage.app/Contents/MacOS/Scrollpage --calibrate-pinch`
    and compare your percentiles with the thresholds above; then
    `--diagnose --replay` the saved file for what the engine did in each pose.
 
