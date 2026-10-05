@@ -1,8 +1,12 @@
 import Foundation
 
 public enum GestureOutput: Equatable, Sendable {
-    /// Pinch went down: the finger touched the pad. Stops any glide.
+    /// Pinch went down: the finger touched the pad.
     case touchBegan
+    /// Stop the momentum glide. Sent just before `touchBegan` while a glide
+    /// could still be running, unless the pinch comes too soon after the fling
+    /// to be a deliberate catch.
+    case catchGlide
     /// Pointer displacement in screen points (y-down).
     case pointerMoved(dx: Double, dy: Double)
     /// Tap-to-click. `count` is 1, 2 or 3 (double and triple click).
@@ -66,6 +70,10 @@ public struct GestureTiming: Equatable, Sendable {
     public var flickAfterRelease = 0.25
     /// A newly acquired hand must be tracked this long before it can flick.
     public var flickAfterAcquire = 0.15
+    /// A pinch this soon after a fling does not stop the glide: on a webcam the
+    /// hand often closes into a pinch ~0.1 s after flicking, which would end the
+    /// scroll almost as soon as it started.
+    public var glideCatchDelay = 0.4
     /// Window over which hand speed is measured for acceleration.
     public var speedWindow = 0.08
 
@@ -111,6 +119,7 @@ public final class GestureEngine {
     private var trackedSince: Double?
     private var lastSeen: Double?
     private var lastRelease = -Double.infinity
+    private var lastFling = -Double.infinity
     private var lastClick: (t: Double, count: Int)?
     private var movedSinceClick = false
     /// A touch only begins after the fingers have been seen apart, so a hand
@@ -168,6 +177,10 @@ public final class GestureEngine {
             pinchArmed = false
             touch = Touch(start: t, origin: filtered)
             flick.reset()
+            let sinceFling = t - lastFling
+            if sinceFling >= timing.glideCatchDelay && sinceFling <= MomentumScroller().maxGlideDuration {
+                out.append(.catchGlide)
+            }
             out.append(.touchBegan)
         } else if !pinching && wasPinching {
             endTouch(at: t, allowClick: true, &out)
@@ -198,6 +211,7 @@ public final class GestureEngine {
                 }
             }
             if let f = flick.update(position: virtual, at: t, canStart: afterRelease && afterAcquire && hand.isOpenHand) {
+                lastFling = t
                 out.append(fling(for: f))
             }
         }

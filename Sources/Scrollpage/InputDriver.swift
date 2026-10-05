@@ -74,9 +74,10 @@ final class InputDriver {
             return
         }
         switch output {
-        case .touchBegan:
+        case .catchGlide:
             if scroller.isActive { Log.input.notice("glide caught by touch after \(self.stats.events) scroll events") }
             stopMomentum()
+        case .touchBegan:
             syncToRealCursor()
         case let .pointerMoved(dx, dy):
             target = clampToDisplays(CGPoint(x: target.x + dx, y: target.y + dy))

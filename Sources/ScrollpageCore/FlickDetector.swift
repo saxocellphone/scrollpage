@@ -53,6 +53,11 @@ public struct FlickConfig: Equatable, Sendable {
     public var minDuration = 0.03
     /// Longer sustained motion is a sweep, not a flick, and is ignored.
     public var maxDuration = 0.3
+    /// A stroke peaking at least this fast may last up to `maxFastDuration`: a
+    /// vigorous flick often starts with a slow lead-in that counts towards its
+    /// length, while repositioning sweeps stay well below this speed.
+    public var fastPeakSpeed = 8.0
+    public var maxFastDuration = 0.45
     /// The dominant axis must exceed the other by this ratio.
     public var axisDominance = 1.4
     /// After a flick, a stroke the opposite way within this window is treated as
@@ -136,7 +141,8 @@ public struct FlickDetector: Sendable {
             s.peakSpeed = speed
             s.peakVelocity = velocity
         }
-        if t - s.start > config.maxDuration {
+        let limit = s.peakSpeed >= config.fastPeakSpeed ? config.maxFastDuration : config.maxDuration
+        if t - s.start > limit {
             stroke = nil
             mustRest = true
             report(s, endedAt: t, .sweep)

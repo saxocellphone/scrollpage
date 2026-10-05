@@ -175,6 +175,7 @@ enum Diagnostics {
             for o in r.outputs {
                 switch o {
                 case .touchBegan: counts["touch", default: 0] += 1
+                case .catchGlide: counts["catch glide", default: 0] += 1
                 case .click(let n): counts["click x\(n)", default: 0] += 1
                 case .pressBegan: counts["press (drag)", default: 0] += 1
                 case .fling: counts["fling", default: 0] += 1

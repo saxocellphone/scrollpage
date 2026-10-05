@@ -424,4 +424,45 @@ final class GestureEngineFlickTests: XCTestCase {
         XCTAssertTrue(blocked?.hasPrefix("hand not open") ?? false, String(describing: blocked))
         XCTAssertTrue(rig.flings.isEmpty)
     }
+
+    /// Recorded on the USB webcam: the hand closed into a pinch ~0.1 s after a
+    /// flick and stopped the glide after 15 scroll events.
+    func testPinchRightAfterFlingDoesNotCatchTheGlide() {
+        let rig = Rig.webcam(fps: 30)
+        rig.hold(0.6)
+        rig.move(by: Vec2(0, -0.8 * rig.pose.size), over: 0.15)
+        rig.hold(0.1)
+        rig.pinch(true)
+        rig.hold(0.1)
+        XCTAssertEqual(rig.flings.count, 1)
+        XCTAssertEqual(rig.count(.touchBegan), 1)
+        XCTAssertEqual(rig.count(.catchGlide), 0)
+        rig.pinch(false)
+
+        rig.hold(0.6)
+        rig.move(by: Vec2(0, -0.8 * rig.pose.size), over: 0.15)
+        rig.hold(0.8)
+        rig.clearOutputs()
+        rig.pinch(true)
+        rig.hold(0.1)
+        XCTAssertEqual(rig.outputs.map(\.output).prefix(2), [.catchGlide, .touchBegan], "a later pinch catches the glide")
+    }
+
+    /// Recorded: a vigorous flick (peak ~18 hu/s, 2.9 hu) that began with a
+    /// slow lead-in ran past 0.3 s and was dropped as a sweep.
+    func testVigorousFlickWithSlowLeadInCounts() {
+        func flings(maxFastDuration: Double) -> [Vec2] {
+            let rig = Rig.webcam(fps: 30)
+            rig.engine.flick.config.maxFastDuration = maxFastDuration
+            rig.hold(0.6)
+            let lead = 3.0 * rig.pose.size * rig.dt
+            rig.run(0.2) { _, pose in pose.palm.y += lead }
+            rig.move(by: Vec2(0, 2.6 * rig.pose.size), over: 0.2)
+            rig.hold(0.6)
+            return rig.flings
+        }
+        XCTAssertTrue(flings(maxFastDuration: 0.3).isEmpty, "precondition: this stroke is longer than 0.3 s")
+        XCTAssertEqual(flings(maxFastDuration: FlickConfig().maxFastDuration).count, 1)
+        XCTAssertGreaterThan(flings(maxFastDuration: FlickConfig().maxFastDuration).first?.y ?? 0, 0)
+    }
 }
