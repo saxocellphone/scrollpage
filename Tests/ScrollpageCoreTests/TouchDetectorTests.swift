@@ -79,6 +79,7 @@ final class TouchDetectorTests: XCTestCase {
         return detector.update(gen.sample(pose), handSize: pose.size, at: t)
     }
 
+    @discardableResult
     private func frames(_ n: Int, ti: Double, middle: Double? = nil, hidden: Set<HandJoint> = []) -> [TouchEvent] {
         (0..<n).compactMap { _ in frame(ti: ti, middle: middle, hidden: hidden) }
     }
