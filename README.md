@@ -18,6 +18,7 @@ key presses.
 | Flick an open hand up/down/left/right | Momentum scroll, like a two-finger fling. |
 | Pinch while the page glides | Catch the glide (stops it at once). |
 | Open hand, or hand out of view | Finger lifted: nothing moves. |
+| Raise a palm, all five fingers spread, hold still ~1 s | Turn gestures off, or back on. |
 
 The pointer is relative, like a trackpad: letting go of the pinch is lifting
 your finger, so you can "clutch" (release, move the hand back, pinch again) to
@@ -51,6 +52,47 @@ the fling velocity, which then decays like a trackpad glide (v0 · e^(−t/325 m
 Slow hand movements, hands entering the frame, the hand returning after a
 flick, and the motion right after a pinch are all ignored, so moving your hand
 around doesn't scroll.
+
+### Turning gestures off and on
+
+When you want to use your hands for something else, hold one up facing the
+camera with all five fingers spread (thumb out too), and keep it still for
+about a second. The status pill says **Gestures off**: nothing moves, clicks or
+scrolls, and Scrollpage only watches for that same pose. Hold it up again for
+**Gestures on**. After 0.3 s of holding, the pill shows "Hold to turn off" (or
+on) with a ring filling up, so you can see it coming and cancel by moving or
+relaxing the hand. Turning off mid-drag releases the button, and a glide in
+progress stops.
+
+Why this pose and these rules:
+
+- **Nothing else uses it, and ordinary hands don't make it.** In three recorded
+  sessions of ordinary use (535 hand frames of pointing, clicking, flicking and
+  resting), not one frame met all four conditions: four fingers extended, thumb
+  out, fingers spread (index tip to little tip at least 0.75 hand lengths) and
+  the hand upright within 35°. Each of the first three conditions matters on its
+  own: without the spread 16 frames would match, without "upright" 4, without
+  four extended fingers 25. A relaxed open hand (fingers together) still just
+  means "finger lifted".
+- **Still, for a second.** The hold restarts if the hand moves faster than 0.4
+  hand lengths per second or wanders more than 0.2. Flicks start at 1.5 and
+  peak above 3.5, so a flick through the pose never toggles, and holding still
+  never flicks.
+- **Once per hold.** After a toggle the hand must leave the pose (or the frame)
+  for 0.3 s before the next one, and two toggles are at least 1.5 s apart. After
+  a toggle, flicks wait until the hand has left the pose for 0.4 s and slowed
+  down, so lowering your hand doesn't scroll.
+- **Limits.** A 2D pose can't reliably tell the palm from the back of the hand,
+  so a spread hand facing either way works. The thresholds come from hand
+  proportions and the synthetic tests; there is no recording of real raised
+  palms yet, so check yours with `--diagnose --record` and `--replay` (the
+  "Raised palm" line).
+
+The gesture and the menu switch are the same on/off state: after the gesture
+the switch shows off, and the switch can turn gestures back on. The difference
+is the camera. Off by gesture, it keeps running, because that is how it sees
+your palm to turn back on. Off from the menu, it stops, so only the menu can
+turn Scrollpage back on. Off by gesture is not remembered across launches.
 
 ## How it feels like a trackpad
 
@@ -132,7 +174,8 @@ The menu bar popover has an on/off switch and three settings, nothing else:
   trackpad with natural scrolling. Defaults to the system setting.
 
 Scrollpage pauses the camera while the screen sleeps or the user session is
-switched out, and turns it off entirely when switched off. The camera picker is
+switched out, and turns it off entirely when switched off from the menu (not
+when turned off by the raised-palm gesture, see above). The camera picker is
 in the preview window.
 
 ## Diagnostics
@@ -151,20 +194,22 @@ tune thresholds against real hands. (When run from a terminal, macOS asks for
 camera access on behalf of the terminal app.)
 
 `--ring-demo [seconds]` cycles the touch ring through touch, click, drag and
-lift at the pointer; `--render-ring states.png [single.png]` renders the ring
-states offscreen over light and dark backgrounds.
+lift at the pointer; `--render-ring states.png [single.png [pills.png]]`
+renders the ring states, and optionally the toggle's status pills, offscreen
+over light and dark backgrounds.
 
 ## Project layout
 
 - `Sources/ScrollpageCore`: the pure, tested motion model: `HandSample`,
   `OneEuroFilter2D`, `PointerAcceleration`, `PinchDetector`, `FlickDetector`,
-  `MomentumScroller`, and `GestureEngine`, which turns hand samples into
-  trackpad events.
+  `ToggleGestureDetector`, `MomentumScroller`, and `GestureEngine`, which turns
+  hand samples into trackpad events.
 - `Sources/Scrollpage`: the app: camera + Vision pipeline, CGEvent input
   driver, menu bar popover, status pill, touch ring, onboarding, diagnostics.
 - `Tests/ScrollpageCoreTests`: XCTest suite driven by a synthetic hand with
   webcam-like noise (drift, tap, double tap, drag, hand loss, flicks and the
-  false-flick cases, momentum, filter and curve properties).
+  false-flick cases, the on/off toggle and what it blocks, momentum, filter and
+  curve properties).
 
 ## Credits
 
