@@ -150,6 +150,7 @@ public final class GestureEngine {
         var out: [GestureOutput] = []
         applyControl(on, at: lastSeen ?? 0, &out)
         snapshot.controlOn = controlOn
+        snapshot.toggled = false
         return out
     }
 
