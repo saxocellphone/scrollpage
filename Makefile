@@ -4,8 +4,9 @@ BINARY      := .build/release/$(APP_NAME)
 INSTALL_DIR ?= /Applications
 # macOS ties Accessibility and Camera approvals to the signature. "local" signs
 # with a self-signed identity kept in this clone's .git (scripts/local-signing.sh),
-# so approvals survive rebuilds. "-" signs ad hoc: every build needs approving
-# again. A Developer ID also works:
+# so approvals survive rebuilds; CI imports the same identity from repository
+# secrets and passes SIGN_IDENTITY=local. "-" signs ad hoc: every build needs
+# approving again. A Developer ID also works:
 #   make SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
 SIGN_IDENTITY ?= $(if $(GITHUB_ACTIONS),-,local)
 DIAGNOSE_SECONDS     ?= 15

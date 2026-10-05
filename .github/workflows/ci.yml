@@ -141,12 +141,46 @@ jobs:
           retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
           if-no-files-found: ignore
 
+      # The identity is the one local builds use (scripts/local-signing.sh), so
+      # CI artifacts have the same designated requirement and macOS keeps the
+      # Accessibility and Camera approvals when one replaces a local build.
+      - name: Import signing identity
+        if: steps.detect.outputs.has_package == 'true'
+        id: signing
+        env:
+          SIGNING_P12: ${{ secrets.SCROLLPAGE_SIGNING_P12 }}
+          SIGNING_PASSWORD: ${{ secrets.SCROLLPAGE_SIGNING_PASSWORD }}
+        run: |
+          if [[ -z "$SIGNING_P12" || -z "$SIGNING_PASSWORD" ]]; then
+            echo "::warning title=Ad-hoc signature::SCROLLPAGE_SIGNING_P12 and SCROLLPAGE_SIGNING_PASSWORD are not available to this run (unset, or a pull request from a fork). The app is signed ad hoc, so installing it needs Accessibility approved again."
+            echo "identity=-" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          dir="$RUNNER_TEMP/scrollpage-signing"
+          keychain="$dir/signing.keychain-db"
+          # Must match PASS in scripts/local-signing.sh, which unlocks this keychain.
+          pass="scrollpage-local-signing"
+          mkdir -p "$dir"
+          umask 077
+          printf '%s' "$SIGNING_P12" | base64 --decode > "$dir/identity.p12"
+          security create-keychain -p "$pass" "$keychain"
+          security set-keychain-settings "$keychain"
+          security import "$dir/identity.p12" -k "$keychain" -P "$SIGNING_PASSWORD" -T /usr/bin/codesign >/dev/null
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$pass" "$keychain" >/dev/null
+          rm -f "$dir/identity.p12"
+          security find-identity -p codesigning "$keychain" | grep -q '"Scrollpage Local Signing"'
+          echo "identity=local" >> "$GITHUB_OUTPUT"
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+
       - name: Build app bundle
         if: steps.detect.outputs.has_package == 'true'
+        env:
+          SIGN_IDENTITY: ${{ steps.signing.outputs.identity || '-' }}
+          SCROLLPAGE_SIGNING_DIR: ${{ steps.signing.outputs.dir }}
         run: |
           if [[ "${{ steps.detect.outputs.has_make_build }}" == "true" ]]; then
-            echo "Using: make build"
-            make build
+            echo "Using: make build SIGN_IDENTITY=$SIGN_IDENTITY"
+            make build SIGN_IDENTITY="$SIGN_IDENTITY"
           else
             echo "No 'build' target in Makefile; using scripts/ci-bundle-app.sh"
             if [[ -x scripts/ci-bundle-app.sh ]]; then
@@ -155,6 +189,12 @@ jobs:
               bash scripts/ci-bundle-app.sh
             fi
           fi
+
+      - name: Delete signing keychain
+        if: always() && steps.signing.outputs.identity == 'local'
+        run: |
+          security delete-keychain "${{ steps.signing.outputs.dir }}/signing.keychain-db" || true
+          rm -rf "${{ steps.signing.outputs.dir }}"
 
       - name: Package app
         if: steps.detect.outputs.has_package == 'true'
@@ -178,7 +218,9 @@ jobs:
             echo "::warning title=Unsigned bundle::$app was not validly signed; applying an ad-hoc signature."
             codesign --force --deep --sign - "$app"
           fi
-          codesign -dv --verbose=2 "$app" 2>&1 | grep -E '^(Identifier|Signature|TeamIdentifier)=' || true
+          codesign -dv --verbose=2 "$app" 2>&1 | grep -E '^(Identifier|Signature|TeamIdentifier|Authority)=' || true
+          requirement="$(codesign -dr - "$app" 2>&1 | sed -n 's/^designated => //p')"
+          echo "Designated requirement: $requirement"
           name="$(basename "$app" .app)"
           short="${HEAD_SHA:0:7}"
           artifact="$name-$short"
@@ -195,6 +237,7 @@ jobs:
             echo "| --- | --- |"
             echo "| Artifact | \`$artifact\` ($size) |"
             echo "| Bundle ID | \`$bundle_id\` |"
+            echo "| Designated requirement | \`$requirement\` |"
             echo "| Commit | \`$HEAD_SHA\` |"
             echo ""
             echo "Install locally: \`scripts/install-latest.sh --run-id $GITHUB_RUN_ID\`"

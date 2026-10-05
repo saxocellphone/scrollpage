@@ -4,7 +4,7 @@ Every push (any branch), pull request, and `v*` tag runs [`.github/workflows/ci.
 
 1. `swift build` (with tests, if the package has test targets)
 2. `swift test --parallel` — failures fail the job; a pass/fail table is shown on the run's summary page and the xunit XML is uploaded as `test-results-*`
-3. `make build` (or `scripts/ci-bundle-app.sh` if the Makefile has no `build` target) to produce an ad-hoc signed `Scrollpage.app`
+3. `make build` (or `scripts/ci-bundle-app.sh` if the Makefile has no `build` target) to produce `Scrollpage.app`, signed with the project's self-signed identity (see [Signing](#signing)), or ad hoc when the signing secrets aren't available
 4. Zip with `ditto` and upload as the artifact `Scrollpage-<shortsha>` (kept 14 days)
 5. On a `v*` tag, attach the zip to a GitHub Release
 
@@ -38,8 +38,28 @@ git tag v0.1.0 && git push origin v0.1.0
 
 This creates a release with `Scrollpage-<sha>.zip` attached and auto-generated notes. Tags with a hyphen (`v0.2.0-beta.1`) are marked as pre-release.
 
+## Signing
+
+macOS remembers the Camera and Accessibility approvals by the app's *designated requirement*. For an ad-hoc signature that is the build's hash, so every build needs approving again. Local builds (`make build`) and CI builds both sign with **Scrollpage Local Signing**, one self-signed certificate, so the requirement is the same for every build:
+
+```
+identifier "com.saxocellphone.scrollpage" and certificate leaf = H"8e58a9e4a7319acb515cc32302e927913bb709cf"
+```
+
+- Locally, `scripts/local-signing.sh` keeps the identity in a keychain in the clone's git directory (`.git/scrollpage-signing/`, shared by all worktrees, never committed).
+- In CI, the repository secrets `SCROLLPAGE_SIGNING_P12` (the identity as a base64 PKCS#12) and `SCROLLPAGE_SIGNING_PASSWORD` (its password) are imported into a temporary keychain, `make build SIGN_IDENTITY=local` signs with it, and the keychain is deleted afterwards. The run summary shows the designated requirement.
+- Without the secrets (a fork's pull request, or a fork of the repo), CI falls back to an ad-hoc signature with a warning.
+
+Check a build with `codesign -dr - Scrollpage.app`. To move the identity to another machine, export it from the keychain as a `.p12` (`security export -k <keychain> -t identities -f pkcs12 -o identity.p12`, which asks for confirmation in a dialog) and import it with the commands in the workflow's *Import signing identity* step. To replace it, generate a new one as `scripts/local-signing.sh` does, put it in the local keychain, and update both secrets:
+
+```sh
+base64 -i identity.p12 | gh secret set SCROLLPAGE_SIGNING_P12
+gh secret set SCROLLPAGE_SIGNING_PASSWORD   # prompts for the password
+```
+
+Changing the identity changes the requirement, so the next install needs the approvals once more.
+
 ## Gatekeeper and permissions
 
-- Builds are **ad-hoc signed**, not notarized. Files downloaded through a browser are quarantined, and Gatekeeper will refuse to open them ("can't be opened" or "is damaged"). Fix this with `xattr -dr com.apple.quarantine` as shown above, or right-click › Open. The install script does this for you.
-- Scrollpage needs **Camera** and **Accessibility** permissions. macOS ties these to the app's code signature, and every ad-hoc build has a different one, so **after installing a new build you'll usually have to re-grant Accessibility**: go to System Settings › Privacy & Security › Accessibility, select Scrollpage, click **−**, then click **+** and add it again. Alternatively, run `scripts/install-latest.sh --reset-permissions`, which runs `tccutil reset Accessibility <bundle id>` so you get a fresh prompt. Camera access may be re-prompted too.
-- A stable signing identity (Developer ID, or a self-signed certificate passed as `SIGN_IDENTITY`) would keep permissions across updates. CI doesn't have one yet.
+- Builds are self-signed (or ad hoc), not notarized. Files downloaded through a browser are quarantined, and Gatekeeper will refuse to open them ("can't be opened" or "is damaged"). Fix this with `xattr -dr com.apple.quarantine` as shown above, or right-click › Open. The install script does this for you.
+- Scrollpage needs **Camera** and **Accessibility** permissions. With the shared identity, approving them once covers later local and CI builds. After installing an ad-hoc build, or the first build after the identity changed, re-grant Accessibility: go to System Settings › Privacy & Security › Accessibility, select Scrollpage, click **−**, then click **+** and add it again. Alternatively, run `scripts/install-latest.sh --reset-permissions`, which runs `tccutil reset Accessibility <bundle id>` so you get a fresh prompt. Camera access may be re-prompted too.
