@@ -266,8 +266,9 @@ enum Diagnostics {
         private var stillScrollDrift = 0.0
         private var stillTime = 0.0
         private var previousStillTime: Double?
-        /// Palm positions (hand units) over the last 0.5 s, to find still stretches.
-        private var recent: [(t: Double, p: Vec2)] = []
+        /// Palm positions (hand units) over the last 0.5 s, and whether the
+        /// forearm was rolling, to find still stretches.
+        private var recent: [(t: Double, p: Vec2, rolling: Bool)] = []
         private var counts: [String: Int] = [:]
         private var travel = 0.0
         private var travelX = 0.0
@@ -355,10 +356,10 @@ enum Diagnostics {
                 handFrames += 1
                 handSizes.append(size)
                 if let ratio = r.snapshot.pinchRatio { pinchRatios.append(ratio) }
-                recent.append((r.time, palm / size))
+                recent.append((r.time, palm / size, r.snapshot.isRolling))
                 while let first = recent.first, r.time - first.t > 0.5 { recent.removeFirst() }
                 let still = r.time - (recent.first?.t ?? r.time) > 0.4
-                    && recent.allSatisfy { $0.p.distance(to: palm / size) < 0.1 }
+                    && recent.allSatisfy { $0.p.distance(to: palm / size) < 0.1 && !$0.rolling }
                 if still, let prev = previousPalm {
                     stillJitter.append(palm.distance(to: prev.p) / size)
                 }

@@ -109,6 +109,9 @@ public struct GestureSnapshot: Equatable, Sendable {
     /// The pointer displacement this frame would produce if the hand were
     /// pinching. Used by diagnostics to measure drift of a still hand.
     public var potentialDelta = Vec2.zero
+    /// The forearm is rolling, or stopped less than `rollLinger` ago. The palm
+    /// can stay put while it rolls, so diagnostics don't count it as still.
+    public var isRolling = false
     /// The content displacement this frame would produce if the hand were a fist.
     public var potentialScroll = Vec2.zero
     /// Gestures drive the pointer. When false only the toggle is watched.
@@ -463,6 +466,7 @@ public final class GestureEngine {
         snapshot.handSize = size
         snapshot.speed = speed
         snapshot.potentialDelta = translationDelta + rollDelta
+        snapshot.isRolling = t - lastRoll <= timing.rollLinger
         snapshot.potentialScroll = scrollDelta
         snapshot.controlOn = controlOn
         snapshot.toggleProgress = toggle.progress
