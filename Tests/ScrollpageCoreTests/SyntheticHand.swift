@@ -33,8 +33,12 @@ struct HandPose: Equatable {
     var fingersOpen = true
     /// Fingers fanned apart and the thumb stretched out to the side.
     var spread = false
+    /// Index and middle opened this many degrees apart, in a V.
+    var vAngle: Double?
     /// Thumb folded across the palm.
     var thumbTucked = false
+    /// Thumb tip placed on this joint, as when it touches a fingertip.
+    var thumbOn: HandJoint?
     /// Fingers (named by their knuckle) curled even when the others are open.
     var folded: Set<HandJoint> = []
     /// Partly bent fingers (named by their knuckle), 0 straight to 1 curled.
@@ -57,10 +61,13 @@ struct HandPose: Equatable {
     /// sits this far (hand sizes) from the point midway between them.
     var middleTouch: Double?
 
-    /// The control toggle pose: five fingers spread, palm up and facing the camera.
-    static var raisedPalm: HandPose {
+    /// The control toggle pose: index and middle up in a V, ring and little
+    /// curled, the thumb folded over them.
+    static var peaceSign: HandPose {
         var pose = HandPose()
-        pose.spread = true
+        pose.vAngle = 24
+        pose.folded = [.ringMCP, .littleMCP]
+        pose.thumbTucked = true
         return pose
     }
 }
@@ -98,6 +105,9 @@ struct SyntheticHand {
                 // Each joint bends by its share of a full curl, toward the little finger.
                 let c = pose.curl[mcp] ?? 0
                 var angle = (pose.spread ? fan[mcp]! : 0) * .pi / 180
+                if let v = pose.vAngle, mcp == .indexMCP || mcp == .middleMCP {
+                    angle = (mcp == .indexMCP ? -v : v) / 2 * .pi / 180
+                }
                 var at = base
                 for (joint, length, flex) in [(pip, 0.45, 60.0), (dip, 0.25, 100.0), (tip, 0.20, 70.0)] {
                     angle += c * flex * .pi / 180
@@ -138,6 +148,9 @@ struct SyntheticHand {
             joints[.thumbMP] = wrist + Vec2(-0.60 * s, -0.50 * s)
             joints[.thumbIP] = wrist + Vec2(-0.75 * s, -0.70 * s)
             joints[.thumbTip] = joints[.indexTip]! + Vec2(-pose.pinchRatio * s, 0)
+        }
+        if let on = pose.thumbOn {
+            joints[.thumbTip] = joints[on]! + Vec2(-0.03 * s, 0)
         }
 
         if let reach = pose.middleTouch {
@@ -191,7 +204,7 @@ final class Rig {
     var t = 100.0
     let dt: Double
     private(set) var outputs: [(t: Double, output: GestureOutput)] = []
-    /// Frames on which the raised-palm toggle fired, with the new control state.
+    /// Frames on which the peace-sign toggle fired, with the new control state.
     private(set) var toggles: [(t: Double, on: Bool)] = []
     private(set) var progress: [(t: Double, value: Double)] = []
 
@@ -235,6 +248,13 @@ final class Rig {
     }
 
     func hold(_ duration: Double) { run(duration) }
+
+    /// Makes the peace sign (or relaxes into an open hand) where the hand is.
+    func peaceSign(_ on: Bool) {
+        pose.vAngle = on ? 24 : nil
+        pose.folded = on ? [.ringMCP, .littleMCP] : []
+        pose.thumbTucked = on
+    }
 
     func pinch(_ on: Bool, over duration: Double = 0.05) {
         let from = pose.pinchRatio

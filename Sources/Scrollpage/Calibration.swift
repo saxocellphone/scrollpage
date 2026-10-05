@@ -7,8 +7,8 @@ import ScrollpageCore
 /// Prompts for a series of poses in the console, records every frame with the
 /// pose it was asked for, and reports the fingertip distances (in hand sizes)
 /// of each: touching, hovering just apart, three fingertips together, touching
-/// with the other fingers curled (which must not count). The left-hand step
-/// checks which hand Vision calls which.
+/// with the other fingers curled (which must not count), and of the peace sign
+/// that toggles control. The left-hand step checks which hand Vision calls which.
 enum Calibration {
     struct Step {
         let label: String
@@ -27,6 +27,7 @@ enum Calibration {
         Step(label: "hover", prompt: "RIGHT hand: hold thumb and index tips as close as you can WITHOUT touching, a hair apart.", seconds: 6),
         Step(label: "three", prompt: "RIGHT hand: touch the TIPS of thumb, index AND middle finger together and keep them touching. Move slowly.", seconds: 6),
         Step(label: "curled", prompt: "RIGHT hand: thumb and index tips touching again, but middle, ring and little finger curled into the palm (this must NOT count).", seconds: 5),
+        Step(label: "peace", prompt: "RIGHT hand: make a peace sign (index and middle up in a V, thumb folded over the ring and little finger) and hold it still.", seconds: 4),
         Step(label: "left", prompt: "Lower your right hand and hold up only your LEFT hand, open.", seconds: 4),
     ]
 
@@ -103,6 +104,8 @@ enum Calibration {
             var chirality: Chirality?
             var measure: TouchMeasure
             var handSize: Double
+            var peace: PeaceSignMeasure
+            var isPeace: Bool
         }
 
         private var start: Double?
@@ -111,6 +114,7 @@ enum Calibration {
         private var samples: [Sample] = []
         private var framesPerLabel: [String: Int] = [:]
         private var mirrored = false
+        private let toggle = ToggleGestureDetector()
         private let recorder: FileHandle?
 
         init(recordPath: String?) {
@@ -159,7 +163,8 @@ enum Calibration {
             // The biggest hand, whatever Vision calls it: the prompts say which hand it should be.
             if let hand = hands.filter({ $0.handSize != nil }).max(by: { $0.handSize! < $1.handSize! }), let size = hand.handSize {
                 samples.append(Sample(label: label, chirality: hand.chirality,
-                                      measure: TouchMeasure(hand, handSize: size), handSize: size))
+                                      measure: TouchMeasure(hand, handSize: size), handSize: size,
+                                      peace: PeaceSignMeasure(hand, handSize: size), isPeace: toggle.isPeaceSign(hand, handSize: size)))
             }
         }
 
@@ -196,6 +201,15 @@ enum Calibration {
                 let lefts = all.filter { $0.chirality == .left }.count
                 print("  \(label.padding(toLength: 6, withPad: " ", startingAt: 0)) \(all.count)/\(framesPerLabel[label] ?? 0) frames with a hand, \(r.count) readable; "
                     + "labelled right \(rights), left \(lefts), unknown \(all.count - rights - lefts); hand size median \(fmt(percentile(all.map(\.handSize), 0.5), 3))")
+                if label == "peace", !all.isEmpty {
+                    let pose = toggle.config.pose
+                    print("         index–middle  \(dist(all.compactMap(\.peace.gap)))  (V ≥ \(fmt(pose.gapEnter, 2)))")
+                    print("         V angle       \(dist(all.compactMap(\.peace.angle)))  (≥ \(fmt(pose.angleEnter, 0))°)")
+                    print("         tips' reach   \(dist(all.compactMap(\.peace.reach)))  (≥ \(fmt(pose.reachEnter, 2)))")
+                    print("         thumb to ring/little or palm \(dist(all.compactMap(\.peace.thumbNear)))  (≤ \(fmt(pose.thumbNearEnter, 2)))")
+                    print("         thumb to the raised tips     \(dist(all.compactMap(\.peace.thumbApart)))  (≥ \(fmt(pose.thumbApartEnter, 2)))")
+                    print("         thumb across the palm        \(dist(all.compactMap(\.peace.thumbAcross)))  (≥ \(fmt(pose.thumbAcrossEnter, 2)))")
+                }
                 guard !r.isEmpty else { continue }
                 print("         thumb–index   \(dist(r.compactMap(\.measure.thumbIndex)))")
                 switch label {
@@ -227,6 +241,8 @@ enum Calibration {
             print("  three-finger frames read as a pinch        \(share(three) { detector.pose($0.measure) == .pinch })  (want 0 %)")
             print("  touching frames read as three-finger       \(share(touch) { detector.pose($0.measure) == .threeFinger })  (want 0 %)")
             print("  curled frames read as a pinch              \(share(curled) { detector.pose($0.measure) == .pinch })  (want 0 % if those fingers were curled)")
+            print("  peace-sign frames read as a peace sign     \(share(of("peace")) { $0.isPeace })  (want most; the toggle needs \(fmt(toggle.config.holdDuration)) s of them)")
+            print("  other right-hand frames read as one        \(share(samples.filter { $0.label != "peace" && $0.label != "left" }) { $0.isPeace })  (want 0 %)")
 
             let touchTop = percentile(touch.compactMap(\.measure.thumbIndex), 0.95)
             let hoverBottom = percentile(hover.compactMap(\.measure.thumbIndex), 0.05)

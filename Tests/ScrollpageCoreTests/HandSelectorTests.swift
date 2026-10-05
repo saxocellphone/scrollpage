@@ -146,9 +146,9 @@ final class RightHandOnlyTests: XCTestCase {
         rig.hold(0.5)
         rig.move(by: Vec2(0, -0.6 * hu), over: 0.12)
         rig.hold(0.5)
-        rig.pose.spread = true
+        rig.peaceSign(true)
         rig.hold(1.2)
-        rig.pose.spread = false
+        rig.peaceSign(false)
         rig.hold(0.5)
     }
 
@@ -179,16 +179,20 @@ final class RightHandOnlyTests: XCTestCase {
         left.size = 0.22
         rig.others = [left]
         rig.hold(0.5)
-        // The left hand pinches, flicks and raises its palm; the right rests.
+        // The left hand pinches, flicks and makes a peace sign; the right rests.
         rig.run(0.3) { p, _ in rig.others[0].pinchRatio = p < 0.5 ? 0.8 : Rig.touching }
         rig.run(0.5) { p, _ in rig.others[0].palm.x = 0.3 + 0.1 * p }
         rig.run(0.3) { _, _ in rig.others[0].pinchRatio = 0.8 }
         rig.run(0.12) { p, _ in rig.others[0].palm.y = 0.5 - 0.6 * 0.22 * p }
-        rig.run(1.5) { _, _ in rig.others[0].spread = true }
+        rig.run(1.5) { _, _ in
+            rig.others[0].vAngle = 24
+            rig.others[0].folded = [.ringMCP, .littleMCP]
+            rig.others[0].thumbTucked = true
+        }
         XCTAssertTrue(rig.outputs.isEmpty, "\(rig.outputs.map(\.output))")
         XCTAssertTrue(rig.toggles.isEmpty)
 
-        rig.others[0].spread = false
+        rig.others[0] = left
         rig.pinch(true)
         rig.hold(0.05)
         rig.pinch(false)

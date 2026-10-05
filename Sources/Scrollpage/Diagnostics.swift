@@ -161,8 +161,8 @@ enum Diagnostics {
             let hands = decodeHands(object)
             let hand = selector.select(hands, at: t, locked: engine.isEngaged)
             let label = object["label"] as? String
-            // A calibration step that toggled control off (holding the open
-            // hand still does) mustn't hide what the later steps would do.
+            // A calibration step that toggled control off (the peace-sign step
+            // does) mustn't hide what the later steps would do.
             let stepStarts = label != nil && label != "transition" && (previousLabel ?? "transition") == "transition"
             previousLabel = label
             let outputs = (stepStarts ? engine.setControl(on: true) : [])
@@ -229,7 +229,7 @@ enum Diagnostics {
 
         func printReport() {
             guard !order.isEmpty else { return }
-            let wanted = ["touch": "pinch", "three": "three"]
+            let wanted = ["touch": "pinch", "three": "three", "peace": "toggle"]
             print("\nPer pose (after the first \(fmt(Calibration.settleSeconds)) s of each step; control turned back on at each step)")
             print("  pose     want    frames  pinch held  three held  off   begins / clicks           pointer  scroll")
             for pose in order {
@@ -275,7 +275,8 @@ enum Diagnostics {
         private var ignoredFrames = 0
         private var mirrored = false
         private let toggle = ToggleGestureDetector()
-        private var palmFrames = 0
+        private var peaceFrames = 0
+        private var vFrames = 0
         private var maxToggleProgress = 0.0
         private var lastBlocked: String?
         private let recorder: FileHandle?
@@ -339,8 +340,10 @@ enum Diagnostics {
             }
             if r.snapshot.toggled { counts[r.snapshot.controlOn ? "toggle on" : "toggle off", default: 0] += 1 }
             maxToggleProgress = max(maxToggleProgress, r.snapshot.toggleProgress)
-            if let hand = r.hand, let size = r.snapshot.handSize, toggle.isRaisedPalm(hand, handSize: size) {
-                palmFrames += 1
+            if let hand = r.hand, let size = r.snapshot.handSize {
+                if toggle.isPeaceSign(hand, handSize: size) { peaceFrames += 1 }
+                if hand.extensionReading(.index) == .extended && hand.extensionReading(.middle) == .extended
+                    && hand.extensionReading(.ring) == .curled && hand.extensionReading(.little) == .curled { vFrames += 1 }
             }
 
             if let hand = r.hand, let palm = hand.palmCenter, let size = r.snapshot.handSize {
@@ -404,7 +407,8 @@ enum Diagnostics {
             }
             let gestures = counts.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: ", ")
             print("Gestures          \(gestures.isEmpty ? "none" : gestures); pointer travel \(fmt(travel, 0)) pt, scroll travel \(fmt(scrollTravel, 0)) pt")
-            print("Raised palm       \(fmt(100 * Double(palmFrames) / Double(max(1, handFrames)), 1)) % of hand frames; longest still hold \(fmt(100 * maxToggleProgress, 0)) % of a toggle")
+            let share = { [handFrames] (n: Int) in fmt(100 * Double(n) / Double(max(1, handFrames)), 1) }
+            print("Peace sign        \(share(peaceFrames)) % of hand frames (index and middle up, ring and little curled: \(share(vFrames)) %); longest still hold \(fmt(100 * maxToggleProgress, 0)) % of a toggle")
         }
     }
 }

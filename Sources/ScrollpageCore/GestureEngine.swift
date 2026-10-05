@@ -68,9 +68,9 @@ public struct GestureSnapshot: Equatable, Sendable {
     public var potentialDelta = Vec2.zero
     /// Gestures drive the pointer. When false only the toggle is watched.
     public var controlOn = true
-    /// Progress (0...1) of a raised-palm hold toward toggling control.
+    /// Progress (0...1) of a peace-sign hold toward toggling control.
     public var toggleProgress = 0.0
-    /// The raised-palm toggle fired on this frame; `controlOn` is the new state.
+    /// The peace-sign toggle fired on this frame; `controlOn` is the new state.
     public var toggled = false
     /// Why a fast motion this frame could not start a flick, if it couldn't.
     public var flickBlocked: String?
@@ -98,7 +98,7 @@ public struct GestureTiming: Equatable, Sendable {
     public var flickMinThumbIndex = 0.25
     /// A newly acquired hand must be tracked this long before it can flick.
     public var flickAfterAcquire = 0.15
-    /// After a toggle, no flick until the hand has left the raised palm for this
+    /// After a toggle, no flick until the hand has left the peace sign for this
     /// long and come to rest, so lowering the hand doesn't scroll.
     public var flickAfterToggle = 0.4
     /// A pinch this soon after a fling does not stop the glide: on a webcam the
@@ -132,8 +132,9 @@ public struct GestureTiming: Equatable, Sendable {
 ///   content follows the hand, and glides on a quick release.
 /// - A flick of the open hand starts a momentum scroll; a touch catches it.
 /// - An open hand, or no hand, is a lifted finger: nothing moves.
-/// - A raised palm, five fingers spread, held still for a second turns control
-///   off or back on. While off, nothing but that toggle is recognized.
+/// - A peace sign (index and middle up in a V, the other fingers folded) held
+///   still for half a second turns control off or back on, but never while a
+///   touch is down. While off, nothing but that toggle is recognized.
 ///
 /// Only a touch confirmed by `TouchDetector` moves the pointer or scrolls.
 ///
@@ -185,7 +186,7 @@ public final class GestureEngine {
     /// Content offset of the three-finger scroll on each frame in firm contact.
     private var scrollTrack: [(t: Double, offset: Vec2)] = []
     private var scrollOffset = Vec2.zero
-    /// End of the post-toggle flick hold-off; infinite while the palm is still raised.
+    /// End of the post-toggle flick hold-off; infinite while the V is still held.
     private var flickHoldoff: Double?
 
     public init(settings: MotionSettings = MotionSettings(), timing: GestureTiming = GestureTiming()) {
@@ -195,7 +196,7 @@ public final class GestureEngine {
     }
 
     /// A gesture is under way or starting (a touch, its confirmation, or a
-    /// raised-palm hold), so the hand driving it must not be swapped.
+    /// peace-sign hold), so the hand driving it must not be swapped.
     public var isEngaged: Bool { touch != nil || touches.isEngaged || toggle.isHolding }
 
     /// Ends any touch without clicking and forgets the hand.
@@ -265,7 +266,8 @@ public final class GestureEngine {
         let pointerDelta = acceleration.displacement(for: pointerStep, speed: pointerSpeed)
 
         var blocked: String?
-        let toggled = toggle.update(hand, handSize: size, position: filtered, speed: speed, at: t)
+        let toggled = toggle.update(hand, handSize: size, position: filtered, speed: speed,
+                                    available: touch == nil && !touches.isEngaged, at: t)
         if toggled {
             applyControl(!controlOn, at: t, &out)
             flickHoldoff = .infinity
