@@ -162,7 +162,7 @@ final class AppModel: ObservableObject {
     }
 
     func requestAccessibility() {
-        if !Permissions.accessibilityTrusted { PermissionCheck.resetStaleApproval() }
+        PermissionCheck.resetStaleApprovalIfUntrusted()
         Permissions.promptForAccessibility()
         if !Permissions.accessibilityTrusted { Permissions.openAccessibilitySettings() }
     }

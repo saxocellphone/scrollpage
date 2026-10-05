@@ -45,7 +45,7 @@ struct PermissionCheck {
         return check
     }
 
-    var trusted: Bool { accessibility && postEvents }
+    var trusted: Bool { accessibility || postEvents }
 
     /// True when TCC approvals are pinned to this exact build.
     var approvalTiedToBuild: Bool {
@@ -85,11 +85,16 @@ struct PermissionCheck {
         Log.permissions.notice("\(reason, privacy: .public): \(summary, privacy: .public)")
     }
 
+    @MainActor private static var didReset = false
+
     /// An entry left by a build with another signature shows as switched on in
     /// System Settings, does nothing, and stops the system prompt from adding
     /// this build. Removing Scrollpage's own entries lets the prompt start fresh.
-    static func resetStaleApproval() {
-        guard let id = Bundle.main.bundleIdentifier else { return }
+    /// Only when `AXIsProcessTrusted()` (which follows System Settings live) is
+    /// false, and once per launch, so a fresh grant is never thrown away.
+    @MainActor static func resetStaleApprovalIfUntrusted() {
+        guard !didReset, !AXIsProcessTrusted(), let id = Bundle.main.bundleIdentifier else { return }
+        didReset = true
         for service in ["Accessibility", "PostEvent"] {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
