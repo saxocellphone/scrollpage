@@ -30,5 +30,6 @@ __pycache__/
 *.log
 .drafts/
 
-# Scrollpage app bundle
+# Scrollpage app bundle and CI packaging
 build/
+dist/

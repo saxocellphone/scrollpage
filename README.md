@@ -89,6 +89,22 @@ make clean
 Scrollpage lives in the menu bar (hand icon). The first launch opens the
 camera preview and tutorial.
 
+## CI builds
+
+Every push runs [`.github/workflows/ci.yml`](.github/workflows/ci.yml) on a
+macOS runner: `swift build`, `swift test`, then `make build`, and uploads an
+ad-hoc signed `Scrollpage-<sha>.zip` artifact (kept 14 days; `v*` tags also
+publish a GitHub Release). To install the newest green build of the current
+branch (needs the GitHub CLI):
+
+```bash
+scripts/install-latest.sh                      # to ~/Applications, unquarantined, then opens it
+scripts/install-latest.sh --reset-permissions  # also reset the Accessibility grant
+```
+
+See [docs/ci.md](docs/ci.md) for options, manual installs, releases and
+Gatekeeper notes.
+
 ## Permissions
 
 - **Camera**: to see your hand. Video is processed on the Mac and never stored.
