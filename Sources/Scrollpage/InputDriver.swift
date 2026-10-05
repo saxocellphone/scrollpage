@@ -96,6 +96,19 @@ final class InputDriver {
             releaseButton()
         case let .fling(vx, vy):
             fling(Vec2(vx, vy))
+        case .scrollBegan:
+            systemNaturalScrolling = Permissions.systemNaturalScrolling
+            if scroller.isActive { Log.input.notice("glide replaced by a three-finger scroll") }
+            post(scroller.beginDrag())
+            stats = ScrollStats()
+            ensureTimer()
+        case let .scrolled(dx, dy):
+            scroller.drag(Vec2(dx, dy))
+            ensureTimer()
+        case let .scrollEnded(vx, vy):
+            post(scroller.endDrag(velocity: Vec2(vx, vy)))
+            Log.input.notice("three-finger scroll ended: \(self.stats.events) events, wheel1 \(self.stats.wheel1) px, wheel2 \(self.stats.wheel2) px, glide vx=\(vx, format: .fixed(precision: 0)) vy=\(vy, format: .fixed(precision: 0))")
+            ensureTimer()
         }
     }
 
@@ -167,6 +180,8 @@ final class InputDriver {
 
     /// A fling is posted the way a trackpad reports one: a short gesture
     /// (began, changed…, ended) followed by momentum events the app can interrupt.
+    /// A three-finger scroll is a two-finger drag on the pad: began, changed
+    /// for as long as the hand moves, ended, then momentum.
     private func fling(_ velocity: Vec2) {
         systemNaturalScrolling = Permissions.systemNaturalScrolling
         Log.input.notice("fling vx=\(velocity.x, format: .fixed(precision: 0)) vy=\(velocity.y, format: .fixed(precision: 0)) systemNatural=\(self.systemNaturalScrolling)")

@@ -76,6 +76,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var handVisible = false
     @Published private(set) var stats = PipelineStats()
     @Published private(set) var latestHand: HandSample?
+    /// Every hand in view, for the preview; `latestHand` is the one driving gestures.
+    @Published private(set) var latestHands: [HandSample] = []
 
     @Published private(set) var didPoint = false
     @Published private(set) var didClick = false
@@ -98,6 +100,7 @@ final class AppModel: ObservableObject {
     private var systemPaused = false
     private var pollTimer: Timer?
     private var pointTravel = 0.0
+    private var scrollTravel = 0.0
     private var rawHandVisible = false
     private var rawHandChangedAt = 0.0
     private var basePill: PillState?
@@ -161,6 +164,7 @@ final class AppModel: ObservableObject {
         didClick = false
         didScroll = false
         pointTravel = 0
+        scrollTravel = 0
     }
 
     func refreshCameras() {
@@ -202,6 +206,7 @@ final class AppModel: ObservableObject {
             handVisible = false
             rawHandVisible = false
             latestHand = nil
+            latestHands = []
             ring.hide()
         }
         refreshPill()
@@ -335,6 +340,9 @@ final class AppModel: ObservableObject {
             case let .fling(vx, vy):
                 didScroll = true
                 if enabled { pill.show(.scroll(Self.arrow(vx: vx, vy: vy))) }
+            case let .scrolled(dx, dy):
+                scrollTravel += (dx * dx + dy * dy).squareRoot()
+                if scrollTravel > 150 { didScroll = true }
             default:
                 break
             }
@@ -352,7 +360,13 @@ final class AppModel: ObservableObject {
         guard report.outputs.isEmpty == false || now - lastUIUpdate > 1.0 / 30 else { return }
         lastUIUpdate = now
         if stats != report.stats { stats = report.stats }
-        if previewOpen { latestHand = report.hand } else if latestHand != nil { latestHand = nil }
+        if previewOpen {
+            latestHand = report.hand
+            latestHands = report.hands
+        } else if latestHand != nil || !latestHands.isEmpty {
+            latestHand = nil
+            latestHands = []
+        }
     }
 
     private func gestureToggled(on: Bool) {

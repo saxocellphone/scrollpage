@@ -3,10 +3,13 @@ import Foundation
 import ScrollpageCore
 
 /// `Scrollpage --diagnose [seconds] [--record file.jsonl]`
+/// `Scrollpage --diagnose --replay file.jsonl`
+/// `Scrollpage --calibrate-pinch [--record file.jsonl]`
 ///
 /// Runs the camera, Vision and the real gesture engine headless (no events are
 /// posted) and prints frame rate, latency, tracking quality and how far a still
-/// hand would drift the pointer.
+/// hand would drift the pointer. Calibration walks through labelled poses and
+/// reports the fingertip distances that touching and hovering produce.
 enum Diagnostics {
     static func run(arguments: [String]) -> Never {
         var seconds = 10.0
@@ -29,92 +32,14 @@ enum Diagnostics {
 
         setvbuf(stdout, nil, _IOLBF, 0)
         if let replayPath { replay(replayPath) }
-        print("Scrollpage diagnostics (\(Int(seconds)) s). Hold a hand up and keep it still for a few")
-        print("seconds (drift), then try pinch-move, quick pinches and open-hand flicks.\n")
-
-        switch AVCaptureDevice.authorizationStatus(for: .video) {
-        case .authorized:
-            start(seconds: seconds, recordPath: recordPath)
-        case .notDetermined:
-            AVCaptureDevice.requestAccess(for: .video) { granted in
-                DispatchQueue.main.async {
-                    if granted { start(seconds: seconds, recordPath: recordPath) } else { deny() }
-                }
-            }
-        default:
-            deny()
-        }
-        dispatchMain()
-    }
-
-    private static func deny() -> Never {
-        print("Camera access is denied for this process. Grant it in System Settings > Privacy & Security > Camera")
-        print("(for the app that launched this command, e.g. Terminal or Cursor), or run the diagnostics from Scrollpage.app.")
-        exit(2)
-    }
-
-    /// The user's saved settings, so diagnostics measure what the app would do.
-    private static var savedSettings: MotionSettings {
-        let d = UserDefaults.standard
-        var s = MotionSettings()
-        if d.object(forKey: "trackingSpeed") != nil { s.trackingSpeed = d.double(forKey: "trackingSpeed") }
-        if d.object(forKey: "scrollingSpeed") != nil { s.scrollingSpeed = d.double(forKey: "scrollingSpeed") }
-        s.naturalScrolling = d.object(forKey: "naturalScrolling") != nil ? d.bool(forKey: "naturalScrolling") : Permissions.systemNaturalScrolling
-        s.screenWidth = Double(CGDisplayBounds(CGMainDisplayID()).width)
-        return s
-    }
-
-    /// Runs the gesture engine over a recording made with `--record`.
-    private static func replay(_ path: String) -> Never {
-        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else {
-            print("Can't read \(path)")
-            exit(1)
-        }
-        let engine = GestureEngine(settings: savedSettings)
-        let collector = Collector(recordPath: nil)
-        var previousPalm: Vec2?
-        var strokeCount = 0
-        for line in text.split(separator: "\n") {
-            guard let data = line.data(using: .utf8),
-                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let t = object["t"] as? Double else { continue }
-            var hand: HandSample?
-            if let joints = object["joints"] as? [[Double]] {
-                var points: [HandJoint: JointPoint] = [:]
-                for (j, p) in zip(HandJoint.allCases, joints) where p.count == 3 {
-                    points[j] = JointPoint(Vec2(p[0], p[1]), confidence: p[2])
-                }
-                hand = HandSelector.select([HandSample(points)], previousPalm: previousPalm)
-            }
-            previousPalm = hand?.palmCenter
-            let outputs = engine.process(hand, at: t)
-            var stroke: StrokeReport?
-            if engine.flick.strokeCount != strokeCount {
-                strokeCount = engine.flick.strokeCount
-                stroke = engine.flick.lastStroke
-            }
-            collector.add(FrameReport(time: t, hand: hand, outputs: outputs, snapshot: engine.snapshot,
-                                      stats: PipelineStats(), stroke: stroke))
-        }
-        print("Replayed \(path)")
-        collector.printReport(timing: false)
-        exit(0)
-    }
-
-    private static func start(seconds: Double, recordPath: String?) {
-        let pipeline = CameraPipeline()
-        pipeline.updateSettings(savedSettings)
-        let collector = Collector(recordPath: recordPath)
-        pipeline.onFrame = { collector.add($0) }
-        pipeline.start(deviceID: nil) { result in
-            switch result {
-            case .failure(let error):
-                print("Camera failed: \(error.localizedDescription)")
-                exit(1)
-            case .success(let device):
-                let d = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
-                let fps = device.activeVideoMinFrameDuration.seconds > 0 ? 1 / device.activeVideoMinFrameDuration.seconds : 0
-                print("Camera: \(device.localizedName), \(d.width)x\(d.height) @ \(Int(fps.rounded())) fps")
+        print("Scrollpage diagnostics (\(Int(seconds)) s). Hold your right hand up and keep it still for a few")
+        print("seconds (drift), then try pinch-move, quick pinches, three-finger scrolls and open-hand flicks.\n")
+        withCamera {
+            let pipeline = CameraPipeline()
+            pipeline.updateSettings(savedSettings)
+            let collector = Collector(recordPath: recordPath)
+            pipeline.onFrame = { collector.add($0) }
+            startCamera(pipeline) {
                 DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
                     pipeline.onFrame = nil
                     pipeline.videoQueue.sync { collector.printReport() }
@@ -124,8 +49,128 @@ enum Diagnostics {
         }
     }
 
+    static func withCamera(_ start: @escaping () -> Void) -> Never {
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            start()
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { granted in
+                DispatchQueue.main.async {
+                    if granted { start() } else { deny() }
+                }
+            }
+        default:
+            deny()
+        }
+        dispatchMain()
+    }
+
+    static func startCamera(_ pipeline: CameraPipeline, then: @escaping () -> Void) {
+        pipeline.start(deviceID: UserDefaults.standard.string(forKey: "cameraID")) { result in
+            switch result {
+            case .failure(let error):
+                print("Camera failed: \(error.localizedDescription)")
+                exit(1)
+            case .success(let device):
+                let d = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
+                let fps = device.activeVideoMinFrameDuration.seconds > 0 ? 1 / device.activeVideoMinFrameDuration.seconds : 0
+                print("Camera: \(device.localizedName), \(d.width)x\(d.height) @ \(Int(fps.rounded())) fps")
+                then()
+            }
+        }
+    }
+
+    private static func deny() -> Never {
+        print("Camera access is denied for this process. Grant it in System Settings > Privacy & Security > Camera")
+        print("(for the app that launched this command, e.g. Terminal or Cursor), or run the diagnostics from Scrollpage.app.")
+        exit(2)
+    }
+
+    /// The user's saved settings, so diagnostics measure what the app would do.
+    static var savedSettings: MotionSettings {
+        let d = UserDefaults.standard
+        var s = MotionSettings()
+        if d.object(forKey: "trackingSpeed") != nil { s.trackingSpeed = d.double(forKey: "trackingSpeed") }
+        if d.object(forKey: "scrollingSpeed") != nil { s.scrollingSpeed = d.double(forKey: "scrollingSpeed") }
+        s.naturalScrolling = d.object(forKey: "naturalScrolling") != nil ? d.bool(forKey: "naturalScrolling") : Permissions.systemNaturalScrolling
+        s.screenWidth = Double(CGDisplayBounds(CGMainDisplayID()).width)
+        return s
+    }
+
+    // MARK: - Recording format
+
+    /// One line per frame: `t`, `hands` (every hand: `chirality` "left",
+    /// "right" or null, and `joints`, 21 × [x, y, confidence] or [] in the
+    /// engine's frame), `selected` (index into `hands` of the hand that drove
+    /// gestures, or null) and `out` (gesture outputs). Recordings from before
+    /// chirality have only `joints` for the driving hand.
+    static func encode(_ hand: HandSample) -> [String: Any] {
+        [
+            "chirality": hand.chirality?.rawValue ?? NSNull(),
+            "joints": HandJoint.allCases.map { j -> [Double] in
+                guard let p = hand[j] else { return [] }
+                return [p.location.x, p.location.y, p.confidence]
+            },
+        ]
+    }
+
+    static func decodeJoints(_ joints: [[Double]], chirality: Chirality?) -> HandSample {
+        var points: [HandJoint: JointPoint] = [:]
+        for (j, p) in zip(HandJoint.allCases, joints) where p.count == 3 {
+            points[j] = JointPoint(Vec2(p[0], p[1]), confidence: p[2])
+        }
+        return HandSample(points, chirality: chirality)
+    }
+
+    /// The hands of one recorded frame. A legacy frame's single hand is
+    /// assumed to be the right hand, since only it was followed.
+    static func decodeHands(_ object: [String: Any]) -> [HandSample] {
+        if let hands = object["hands"] as? [[String: Any]] {
+            return hands.compactMap { h in
+                guard let joints = h["joints"] as? [[Double]] else { return nil }
+                return decodeJoints(joints, chirality: (h["chirality"] as? String).flatMap(Chirality.init(rawValue:)))
+            }
+        }
+        if let joints = object["joints"] as? [[Double]] {
+            return [decodeJoints(joints, chirality: .right)]
+        }
+        return []
+    }
+
+    // MARK: - Replay
+
+    /// Runs the gesture engine and the right-hand selector over a recording.
+    private static func replay(_ path: String) -> Never {
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else {
+            print("Can't read \(path)")
+            exit(1)
+        }
+        let engine = GestureEngine(settings: savedSettings)
+        var selector = HandSelector()
+        let collector = Collector(recordPath: nil)
+        var strokeCount = 0
+        for line in text.split(separator: "\n") {
+            guard let data = line.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let t = object["t"] as? Double else { continue }
+            let hands = decodeHands(object)
+            let hand = selector.select(hands, at: t, locked: engine.isEngaged)
+            let outputs = engine.process(hand, at: t)
+            var stroke: StrokeReport?
+            if engine.flick.strokeCount != strokeCount {
+                strokeCount = engine.flick.strokeCount
+                stroke = engine.flick.lastStroke
+            }
+            collector.add(FrameReport(time: t, hand: hand, hands: hands, outputs: outputs, snapshot: engine.snapshot,
+                                      stats: PipelineStats(), stroke: stroke))
+        }
+        print("Replayed \(path)")
+        collector.printReport(timing: false)
+        exit(0)
+    }
+
     /// Only touched on the camera queue.
-    private final class Collector {
+    final class Collector {
         private var frames = 0
         private var handFrames = 0
         private var firstTime: Double?
@@ -143,6 +188,10 @@ enum Diagnostics {
         private var recent: [(t: Double, p: Vec2)] = []
         private var counts: [String: Int] = [:]
         private var travel = 0.0
+        private var scrollTravel = 0.0
+        private var chirality: [String: Int] = [:]
+        private var ignoredFrames = 0
+        private var mirrored = false
         private let toggle = ToggleGestureDetector()
         private var palmFrames = 0
         private var maxToggleProgress = 0.0
@@ -165,6 +214,9 @@ enum Diagnostics {
             lastTime = r.time
             processing.append(r.frameProcessingMs)
             latency.append(r.frameLatencyMs)
+            mirrored = r.stats.imageMirrored
+            for h in r.hands { chirality[h.chirality?.rawValue ?? "unknown", default: 0] += 1 }
+            if r.hand == nil && !r.hands.isEmpty { ignoredFrames += 1 }
 
             if let stroke = r.stroke {
                 print(String(format: "%8.2f s  ", r.time - (firstTime ?? r.time)) + stroke.summary)
@@ -184,6 +236,9 @@ enum Diagnostics {
                 case .fling: counts["fling", default: 0] += 1
                 case let .pointerMoved(dx, dy): travel += (dx * dx + dy * dy).squareRoot()
                 case .touchEnded: break
+                case .scrollBegan: counts["three-finger scroll", default: 0] += 1
+                case let .scrolled(dx, dy): scrollTravel += (dx * dx + dy * dy).squareRoot()
+                case let .scrollEnded(vx, vy): if vx != 0 || vy != 0 { counts["scroll glide", default: 0] += 1 }
                 }
             }
             if r.snapshot.toggled { counts[r.snapshot.controlOn ? "toggle on" : "toggle off", default: 0] += 1 }
@@ -221,14 +276,8 @@ enum Diagnostics {
         private func record(_ r: FrameReport) {
             guard let recorder else { return }
             var line: [String: Any] = ["t": r.time]
-            if let hand = r.hand {
-                line["joints"] = HandJoint.allCases.map { j -> [Double] in
-                    guard let p = hand[j] else { return [] }
-                    return [p.location.x, p.location.y, p.confidence]
-                }
-            } else {
-                line["joints"] = NSNull()
-            }
+            line["hands"] = r.hands.map(Diagnostics.encode)
+            line["selected"] = r.hand.flatMap { h in r.hands.firstIndex(of: h) } ?? NSNull()
             line["out"] = r.outputs.map { "\($0)" }
             if let data = try? JSONSerialization.data(withJSONObject: line), let nl = "\n".data(using: .utf8) {
                 recorder.write(data)
@@ -238,32 +287,38 @@ enum Diagnostics {
 
         func printReport(timing: Bool = true) {
             let duration = max(1e-6, lastTime - (firstTime ?? lastTime))
-            func pct(_ values: [Double], _ p: Double) -> Double {
-                guard !values.isEmpty else { return .nan }
-                let s = values.sorted()
-                return s[min(s.count - 1, Int(Double(s.count - 1) * p))]
-            }
-            func mean(_ v: [Double]) -> Double { v.isEmpty ? .nan : v.reduce(0, +) / Double(v.count) }
-            func f(_ v: Double, _ digits: Int = 1) -> String { v.isNaN ? "–" : String(format: "%.\(digits)f", v) }
+            let th = TouchThresholds()
 
             print("")
-            print("Frames            \(frames) in \(f(duration)) s = \(f(Double(frames) / duration)) fps")
+            print("Frames            \(frames) in \(fmt(duration)) s = \(fmt(Double(frames) / duration)) fps")
             if timing {
-                print("Processing        mean \(f(mean(processing))) ms, p95 \(f(pct(processing, 0.95))) ms (Vision + engine)")
-                print("Capture→gesture   mean \(f(mean(latency))) ms, p95 \(f(pct(latency, 0.95))) ms")
+                print("Processing        mean \(fmt(average(processing))) ms, p95 \(fmt(percentile(processing, 0.95))) ms (Vision + engine)")
+                print("Capture→gesture   mean \(fmt(average(latency))) ms, p95 \(fmt(percentile(latency, 0.95))) ms")
             }
-            print("Hand detected     \(f(100 * Double(handFrames) / Double(max(1, frames)), 0)) % of frames")
-            print("Hand size         mean \(f(mean(handSizes), 3)) image heights")
-            print("Pinch ratio       min \(f(pct(pinchRatios, 0), 2)), median \(f(pct(pinchRatios, 0.5), 2)), max \(f(pct(pinchRatios, 1), 2))  (engage < 0.22, release > 0.38)")
-            print("Palm jitter       \(f(mean(stillJitter) * 1000, 2)) mhu per frame while still")
+            print("Hand detected     \(fmt(100 * Double(handFrames) / Double(max(1, frames)), 0)) % of frames (right hand)")
+            let labels = chirality.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: ", ")
+            print("Hands seen        \(labels.isEmpty ? "none" : labels); \(ignoredFrames) frames with only ignored hands\(timing ? (mirrored ? " (mirrored frames)" : " (unmirrored frames)") : "")")
+            print("Hand size         mean \(fmt(average(handSizes), 3)) image heights")
+            print("Thumb–index       p5 \(fmt(percentile(pinchRatios, 0.05), 3)), median \(fmt(percentile(pinchRatios, 0.5), 3)), p95 \(fmt(percentile(pinchRatios, 0.95), 3)) hand sizes  (touch < \(fmt(th.pinchEnter, 2)), release > \(fmt(th.pinchExit, 2)))")
+            print("Palm jitter       \(fmt(average(stillJitter) * 1000, 2)) mhu per frame while still")
             if stillTime > 0.5 {
-                print("Still-hand drift  \(f(stillDrift / stillTime, 2)) pt/s if pinched (over \(f(stillTime)) s of still hand; target < 1)")
+                print("Still-hand drift  \(fmt(stillDrift / stillTime, 2)) pt/s if pinched (over \(fmt(stillTime)) s of still hand; target < 1)")
             } else {
                 print("Still-hand drift  – (hold the hand still for a few seconds to measure)")
             }
             let gestures = counts.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: ", ")
-            print("Gestures          \(gestures.isEmpty ? "none" : gestures); pointer travel \(f(travel, 0)) pt")
-            print("Raised palm       \(f(100 * Double(palmFrames) / Double(max(1, handFrames)), 1)) % of hand frames; longest still hold \(f(100 * maxToggleProgress, 0)) % of a toggle")
+            print("Gestures          \(gestures.isEmpty ? "none" : gestures); pointer travel \(fmt(travel, 0)) pt, scroll travel \(fmt(scrollTravel, 0)) pt")
+            print("Raised palm       \(fmt(100 * Double(palmFrames) / Double(max(1, handFrames)), 1)) % of hand frames; longest still hold \(fmt(100 * maxToggleProgress, 0)) % of a toggle")
         }
     }
 }
+
+func percentile(_ values: [Double], _ p: Double) -> Double {
+    guard !values.isEmpty else { return .nan }
+    let s = values.sorted()
+    return s[min(s.count - 1, Int(Double(s.count - 1) * p))]
+}
+
+func average(_ v: [Double]) -> Double { v.isEmpty ? .nan : v.reduce(0, +) / Double(v.count) }
+
+func fmt(_ v: Double, _ digits: Int = 1) -> String { v.isNaN ? "–" : String(format: "%.\(digits)f", v) }

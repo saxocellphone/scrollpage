@@ -67,6 +67,72 @@ final class FlingSequencerTests: XCTestCase {
         XCTAssertEqual(events.last?.phase, .began)
     }
 
+    /// A three-finger scroll: camera frames add distance every 1/30 s while the
+    /// sequencer ticks at 120 Hz, then the fingers lift with a release velocity.
+    private func dragThenRelease(_ frames: Int, perFrame: Vec2, velocity: Vec2) -> (drag: [ScrollEvent], after: [ScrollEvent]) {
+        var s = FlingSequencer()
+        var drag = s.beginDrag()
+        for _ in 0..<frames {
+            s.drag(perFrame)
+            for _ in 0..<4 { drag += s.tick(dt) }
+        }
+        var after = s.endDrag(velocity: velocity)
+        var ticks = 0
+        while s.isActive && ticks < 2000 { after += s.tick(dt); ticks += 1 }
+        return (drag, after)
+    }
+
+    func testDragIsAGestureThenMomentum() {
+        let (drag, after) = dragThenRelease(10, perFrame: Vec2(0, -12), velocity: Vec2(0, -900))
+        XCTAssertEqual(drag.first?.phase, .began)
+        XCTAssertTrue(drag.dropFirst().allSatisfy { $0.phase == .changed })
+        XCTAssertGreaterThan(drag.count, 10, "eased over the ticks between camera frames")
+        XCTAssertTrue(drag.allSatisfy { $0.momentum == .none })
+
+        let ended = after.firstIndex { $0.phase == .ended }!
+        XCTAssertTrue(after[..<ended].allSatisfy { $0.phase == .changed })
+        let momentum = after[(ended + 1)...].map(\.momentum)
+        XCTAssertEqual(momentum.first, .begin)
+        XCTAssertEqual(momentum.last, .end)
+        XCTAssertTrue(momentum.dropFirst().dropLast().allSatisfy { $0 == .continue })
+
+        let dragged = (drag + after[..<ended]).reduce(0) { $0 + Int($1.dy) }
+        XCTAssertEqual(dragged, -120, "pixel-precise: every point of hand motion is posted")
+        let glide = after[(ended + 1)...].reduce(0) { $0 + Int($1.dy) }
+        XCTAssertEqual(Double(glide), -900 * MomentumScroller().timeConstant, accuracy: 15)
+    }
+
+    func testDragWithoutVelocityEndsWithoutMomentum() {
+        let (drag, after) = dragThenRelease(6, perFrame: Vec2(7, 0), velocity: .zero)
+        XCTAssertEqual(drag.reduce(0) { $0 + Int($1.dx) } + after.reduce(0) { $0 + Int($1.dx) }, 42)
+        XCTAssertEqual(after.last, ScrollEvent(phase: .ended))
+        XCTAssertTrue(after.allSatisfy { $0.momentum == .none })
+    }
+
+    func testDragThatNeverMovedPostsNothing() {
+        let (drag, after) = dragThenRelease(5, perFrame: .zero, velocity: Vec2(0, 900))
+        XCTAssertEqual(drag, [])
+        XCTAssertEqual(after, [])
+    }
+
+    func testBeginDragStopsAGlide() {
+        var s = FlingSequencer()
+        _ = s.fling(Vec2(0, 2000), dt: dt)
+        for _ in 0..<(FlingSequencer.gestureTicks + 5) { _ = s.tick(dt) }
+        XCTAssertEqual(s.beginDrag(), [ScrollEvent(momentum: .end)])
+        XCTAssertTrue(s.isDragging)
+        XCTAssertEqual(s.momentum.isActive, false)
+    }
+
+    func testStopDuringADragEndsIt() {
+        var s = FlingSequencer()
+        _ = s.beginDrag()
+        s.drag(Vec2(0, 30))
+        _ = s.tick(dt)
+        XCTAssertEqual(s.stop(), [ScrollEvent(phase: .ended)])
+        XCTAssertFalse(s.isActive)
+    }
+
     /// Measured: with natural scrolling on, the window server flips posted
     /// vertical deltas but not horizontal ones.
     func testWheelSigns() {

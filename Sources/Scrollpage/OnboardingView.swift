@@ -17,7 +17,7 @@ struct OnboardingView: View {
 
             ZStack {
                 CameraPreview(session: model.camera.session)
-                SkeletonView(hand: model.latestHand, aspect: model.stats.aspect)
+                SkeletonView(hands: model.latestHands, selected: model.latestHand, aspect: model.stats.aspect)
                 if model.cameraStatus != .authorized || model.cameraError != nil {
                     Text(model.cameraError ?? "Camera access is needed")
                         .foregroundStyle(.secondary)
@@ -44,14 +44,18 @@ struct OnboardingView: View {
                              detail: "Thumb and index together, then move. Faster moves go farther.", done: model.didPoint)
                 TutorialCard(symbol: "cursorarrow.click", title: "Quick pinch to click",
                              detail: "Tap thumb and index without moving. Twice to double-click.", done: model.didClick)
-                TutorialCard(symbol: "hand.raised", title: "Flick an open hand to scroll",
-                             detail: "A quick flick up or down glides the page. Pinch to stop it.", done: model.didScroll)
+                TutorialCard(symbol: "hand.raised", title: "Scroll",
+                             detail: "Touch thumb, index and middle tips and move, or flick an open hand. Pinch to stop a glide.", done: model.didScroll)
             }
 
-            Label("To turn gestures off or back on, hold up an open hand with all five fingers spread, still, for a second.",
-                  systemImage: "hand.raised.fingers.spread")
-                .font(.callout)
-                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 6) {
+                Label("Only your right hand drives Scrollpage; the preview tags it R. Fingertips must really touch.",
+                      systemImage: "hand.point.up.left")
+                Label("To turn gestures off or back on, hold up your right hand with all five fingers spread, still, for a second.",
+                      systemImage: "hand.raised.fingers.spread")
+            }
+            .font(.callout)
+            .foregroundStyle(.secondary)
 
             HStack {
                 Picker("Camera", selection: Binding(get: { model.cameraID ?? "" },
@@ -155,10 +159,13 @@ private struct CameraPreview: NSViewRepresentable {
     }
 }
 
-/// Draws the tracked hand over the preview. Hand samples are already mirrored
-/// and y-down in image-height units, matching the mirrored preview.
+/// Draws the hands over the preview. Hand samples are already mirrored and
+/// y-down in image-height units, matching the mirrored preview. The hand
+/// driving gestures is drawn solid, ignored hands faintly; each is tagged R or
+/// L with the physical hand Vision reports, so the user can check it.
 private struct SkeletonView: View {
-    let hand: HandSample?
+    let hands: [HandSample]
+    let selected: HandSample?
     let aspect: Double
 
     private static let bones: [[HandJoint]] = [
@@ -172,31 +179,45 @@ private struct SkeletonView: View {
 
     var body: some View {
         Canvas { context, size in
-            guard let hand else { return }
             let scale = min(size.width / aspect, size.height)
             let origin = CGPoint(x: (size.width - aspect * scale) / 2, y: (size.height - scale) / 2)
-            func point(_ j: HandJoint) -> CGPoint? {
-                hand.location(j).map { CGPoint(x: origin.x + $0.x * scale, y: origin.y + $0.y * scale) }
-            }
-
-            var path = Path()
-            for chain in Self.bones {
-                let pts = chain.compactMap(point)
-                guard pts.count > 1 else { continue }
-                path.move(to: pts[0])
-                for p in pts.dropFirst() { path.addLine(to: p) }
-            }
-            context.stroke(path, with: .color(.white.opacity(0.75)), style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
-
-            let pinching = (hand.pinchRatio() ?? 1) < 0.3
-            for j in HandJoint.allCases {
-                guard let p = point(j) else { continue }
-                let tip = j == .thumbTip || j == .indexTip
-                let r: CGFloat = tip ? 5 : 3.5
-                let color: Color = tip ? (pinching ? .green : .yellow) : .white
-                context.fill(Path(ellipseIn: CGRect(x: p.x - r, y: p.y - r, width: 2 * r, height: 2 * r)), with: .color(color))
+            for hand in hands {
+                draw(hand, driving: hand == selected, in: &context, origin: origin, scale: scale)
             }
         }
         .allowsHitTesting(false)
+    }
+
+    private func draw(_ hand: HandSample, driving: Bool, in context: inout GraphicsContext, origin: CGPoint, scale: Double) {
+        func point(_ j: HandJoint) -> CGPoint? {
+            hand.location(j).map { CGPoint(x: origin.x + $0.x * scale, y: origin.y + $0.y * scale) }
+        }
+        let alpha = driving ? 1.0 : 0.3
+
+        var path = Path()
+        for chain in Self.bones {
+            let pts = chain.compactMap(point)
+            guard pts.count > 1 else { continue }
+            path.move(to: pts[0])
+            for p in pts.dropFirst() { path.addLine(to: p) }
+        }
+        context.stroke(path, with: .color(.white.opacity(0.75 * alpha)), style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
+
+        let pose = hand.handSize.flatMap { TouchDetector().pose(TouchMeasure(hand, handSize: $0)) }
+        let tips: Set<HandJoint> = pose == .threeFinger ? [.thumbTip, .indexTip, .middleTip] : [.thumbTip, .indexTip]
+        let tipColor: Color = pose == .threeFinger ? .cyan : pose == .pinch ? .green : .yellow
+        for j in HandJoint.allCases {
+            guard let p = point(j) else { continue }
+            let tip = tips.contains(j)
+            let r: CGFloat = tip ? 5 : 3.5
+            let color: Color = tip ? tipColor : .white
+            context.fill(Path(ellipseIn: CGRect(x: p.x - r, y: p.y - r, width: 2 * r, height: 2 * r)), with: .color(color.opacity(alpha)))
+        }
+
+        if let wrist = point(.wrist) {
+            let tag = hand.chirality == .right ? "R" : hand.chirality == .left ? "L" : "?"
+            context.draw(Text(tag).font(.system(size: 15, weight: .bold)).foregroundColor(.white.opacity(alpha)),
+                         at: CGPoint(x: wrist.x, y: wrist.y + 16))
+        }
     }
 }

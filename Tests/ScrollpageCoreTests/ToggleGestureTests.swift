@@ -230,8 +230,8 @@ final class ControlGatingTests: XCTestCase {
     private var postingOutputs: (GestureOutput) -> Bool {
         { output in
             switch output {
-            case .pointerMoved, .click, .pressBegan, .fling, .touchBegan: return true
-            case .touchEnded, .catchGlide: return false
+            case .pointerMoved, .click, .pressBegan, .fling, .touchBegan, .scrollBegan, .scrolled: return true
+            case .touchEnded, .catchGlide, .scrollEnded: return false
             }
         }
     }
@@ -255,6 +255,10 @@ final class ControlGatingTests: XCTestCase {
         rig.pinch(false)
         rig.hold(0.5)
         rig.move(by: Vec2(0, -0.6 * hu), over: 0.12)
+        rig.hold(0.5)
+        rig.threeFinger(true)
+        rig.move(by: Vec2(0, 0.6 * hu), over: 0.4)
+        rig.threeFinger(false)
         rig.hold(0.5)
 
         XCTAssertTrue(rig.outputs.isEmpty, "\(rig.outputs.map(\.output))")

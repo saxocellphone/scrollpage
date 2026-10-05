@@ -42,6 +42,8 @@ public struct ToggleGestureDetector: Sendable {
     public private(set) var progress = 0.0
     /// The last hand seen was in the raised-palm pose (dropouts bridged).
     public private(set) var inPose = false
+    /// A still hold of the pose is being timed.
+    public var isHolding: Bool { holdStart != nil }
 
     private var holdStart: Double?
     private var anchor: Vec2?

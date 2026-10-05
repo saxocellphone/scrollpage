@@ -19,6 +19,20 @@ public struct JointPoint: Equatable, Sendable {
     }
 }
 
+/// Which of the user's physical hands this is.
+public enum Chirality: String, Equatable, Sendable {
+    case left, right
+
+    public var flipped: Chirality { self == .left ? .right : .left }
+
+    /// Vision labels a hand as it appears in the image it was given. A mirrored
+    /// image shows a right hand as a left one, so the label flips back.
+    public static func physical(visionLabel: Chirality?, imageMirrored: Bool) -> Chirality? {
+        guard let visionLabel else { return nil }
+        return imageMirrored ? visionLabel.flipped : visionLabel
+    }
+}
+
 /// One detected hand.
 ///
 /// Coordinates are mirrored (so +x is the user's right, like looking in a mirror)
@@ -28,10 +42,13 @@ public struct HandSample: Equatable, Sendable {
     public static let minConfidence = 0.3
 
     private var points: [JointPoint?]
+    /// The physical hand, or nil when Vision couldn't tell.
+    public var chirality: Chirality?
 
-    public init(_ joints: [HandJoint: JointPoint]) {
+    public init(_ joints: [HandJoint: JointPoint], chirality: Chirality? = nil) {
         points = Array(repeating: nil, count: HandJoint.allCases.count)
         for (joint, point) in joints { points[joint.rawValue] = point }
+        self.chirality = chirality
     }
 
     public subscript(_ joint: HandJoint) -> JointPoint? {
@@ -51,16 +68,29 @@ public struct HandSample: Equatable, Sendable {
     /// Wrist to middle-finger knuckle: a scale reference that stays put while the
     /// fingers move, so motion can be measured in "hand units" regardless of how
     /// far the user sits from the camera.
-    public var handSize: Double? {
-        if let w = location(.wrist), let m = location(.middleMCP) {
-            let d = w.distance(to: m)
-            if d > 1e-4 { return d }
-        }
-        if let i = location(.indexMCP), let l = location(.littleMCP) {
-            let d = i.distance(to: l)
-            if d > 1e-4 { return d * 1.45 }
+    public var handSize: Double? { handSizeMeasure?.size }
+
+    /// The lower confidence of the two joints `handSize` was measured from.
+    public var handSizeConfidence: Double? { handSizeMeasure?.confidence }
+
+    private var handSizeMeasure: (size: Double, confidence: Double)? {
+        for (a, b, scale) in [(HandJoint.wrist, HandJoint.middleMCP, 1.0), (.indexMCP, .littleMCP, 1.45)] {
+            if let pa = self[a], let pb = self[b], let la = location(a), let lb = location(b) {
+                let d = la.distance(to: lb)
+                if d > 1e-4 { return (d * scale, min(pa.confidence, pb.confidence)) }
+            }
         }
         return nil
+    }
+
+    /// Distance between two joints over hand size, or nil if either joint is
+    /// missing or below `minConfidence`.
+    public func ratio(_ a: HandJoint, _ b: HandJoint, handSize size: Double? = nil,
+                      minConfidence: Double = 0.2) -> Double? {
+        guard let s = size ?? handSize, s > 0,
+              let pa = location(a, minConfidence: minConfidence),
+              let pb = location(b, minConfidence: minConfidence) else { return nil }
+        return pa.distance(to: pb) / s
     }
 
     /// Mean of the four knuckles. It barely moves when the thumb and index tip
@@ -75,10 +105,7 @@ public struct HandSample: Equatable, Sendable {
 
     /// Thumb tip to index tip, divided by hand size.
     public func pinchRatio(handSize size: Double? = nil) -> Double? {
-        guard let s = size ?? handSize, s > 0,
-              let thumb = location(.thumbTip, minConfidence: 0.2),
-              let index = location(.indexTip, minConfidence: 0.2) else { return nil }
-        return thumb.distance(to: index) / s
+        ratio(.thumbTip, .indexTip, handSize: size)
     }
 
     /// A finger counts as extended when its tip is clearly farther from the wrist
@@ -99,16 +126,91 @@ public struct HandSample: Equatable, Sendable {
     public var isOpenHand: Bool { extendedFingerCount >= 3 }
 }
 
-public enum HandSelector {
-    /// Picks the hand to follow: the one closest to the hand we were already
-    /// following, otherwise the largest (nearest to the camera).
-    public static func select(_ hands: [HandSample], previousPalm: Vec2?) -> HandSample? {
+public struct HandSelectorConfig: Equatable, Sendable {
+    /// A hand must be labelled right on this many frames in a row before it drives anything.
+    public var acquireFrames = 3
+    /// During a gesture, the followed hand may be labelled left (or unknown) this
+    /// long, as Vision's label flickers, before the gesture is given up.
+    public var flipGrace = 0.4
+    /// Farthest a right-labelled palm may move between frames (image heights)
+    /// and still be the same hand. A fast flick moves about 0.1.
+    public var maxJump = 0.25
+    /// Farthest, in hand sizes, a palm with any other label may move and still
+    /// be taken for the followed hand, so a left hand nearby isn't.
+    public var maxFlippedJump = 1.0
+    /// Frames without the followed hand (motion blur) keep following it this
+    /// long, so it resumes at once instead of being acquired again.
+    public var lostGrace = 0.2
+
+    public init() {}
+}
+
+/// Picks the user's right hand among the detected hands; the left hand never
+/// drives anything, even alone in the frame.
+///
+/// While a gesture is under way (`locked`), the followed hand is tracked by
+/// palm position, so a brief flip of Vision's label doesn't drop a pinch. A
+/// flip lasting longer than `flipGrace` drops the hand, which ends the gesture
+/// as if the hand had left the frame.
+public struct HandSelector: Sendable {
+    public var config: HandSelectorConfig
+
+    private var followed: (palm: Vec2, lastRight: Double, lastSeen: Double)?
+    private var candidate: (palm: Vec2, frames: Int)?
+
+    public init(config: HandSelectorConfig = HandSelectorConfig()) {
+        self.config = config
+    }
+
+    public mutating func reset() {
+        followed = nil
+        candidate = nil
+    }
+
+    public mutating func select(_ hands: [HandSample], at t: Double, locked: Bool) -> HandSample? {
         let usable = hands.filter { $0.palmCenter != nil && $0.handSize != nil }
-        if let prev = previousPalm,
-           let nearest = usable.min(by: { $0.palmCenter!.distance(to: prev) < $1.palmCenter!.distance(to: prev) }),
-           nearest.palmCenter!.distance(to: prev) < 0.25 {
-            return nearest
+
+        if let f = followed {
+            followed = nil
+            let hand = nearest(usable, to: f.palm)
+            let jump = hand.map { $0.palmCenter!.distance(to: f.palm) } ?? .infinity
+            if let hand, hand.chirality == .right, jump < config.maxJump {
+                followed = (hand.palmCenter!, t, t)
+                return hand
+            }
+            if let hand, jump < config.maxFlippedJump * hand.handSize! {
+                // The same hand with its label flipped: follow it through the
+                // grace, but only a gesture already under way may use it.
+                if t - f.lastRight <= config.flipGrace {
+                    followed = (hand.palmCenter!, f.lastRight, t)
+                    return locked ? hand : nil
+                }
+            } else if t - f.lastSeen <= config.lostGrace {
+                followed = f
+                return nil
+            }
         }
-        return usable.max(by: { $0.handSize! < $1.handSize! })
+
+        let rights = usable.filter { $0.chirality == .right }
+        let pick = candidate.flatMap { c in
+            nearest(rights, to: c.palm).flatMap { $0.palmCenter!.distance(to: c.palm) < config.maxJump ? $0 : nil }
+        } ?? rights.max { $0.handSize! < $1.handSize! }
+        guard let pick, let palm = pick.palmCenter else {
+            candidate = nil
+            return nil
+        }
+        let continues = candidate.map { palm.distance(to: $0.palm) < config.maxJump } ?? false
+        let frames = continues ? candidate!.frames + 1 : 1
+        if frames >= config.acquireFrames {
+            candidate = nil
+            followed = (palm, t, t)
+            return pick
+        }
+        candidate = (palm, frames)
+        return nil
+    }
+
+    private func nearest(_ hands: [HandSample], to p: Vec2) -> HandSample? {
+        hands.min { $0.palmCenter!.distance(to: p) < $1.palmCenter!.distance(to: p) }
     }
 }

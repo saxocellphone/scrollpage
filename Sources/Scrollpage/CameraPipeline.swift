@@ -12,13 +12,18 @@ struct PipelineStats: Equatable {
     var latencyMs: Double = 0
     var width = 0
     var height = 0
+    /// The frames Vision sees are mirrored, so its left/right labels are flipped back.
+    var imageMirrored = false
 
     var aspect: Double { height > 0 ? Double(width) / Double(height) : 16.0 / 9.0 }
 }
 
 struct FrameReport {
     var time: Double
+    /// The hand driving gestures: the user's right hand, or nil.
     var hand: HandSample?
+    /// Every hand Vision found, the ignored ones included.
+    var hands: [HandSample] = []
     var outputs: [GestureOutput]
     var snapshot: GestureSnapshot
     var stats: PipelineStats
@@ -43,13 +48,14 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
     private let sessionQueue = DispatchQueue(label: "com.saxocellphone.scrollpage.session")
     private let output = AVCaptureVideoDataOutput()
+    /// Two hands, so a left hand in view can't take the only slot from the right one.
     private let request: VNDetectHumanHandPoseRequest = {
         let r = VNDetectHumanHandPoseRequest()
         r.maximumHandCount = 2
         return r
     }()
     private var input: AVCaptureDeviceInput?
-    private var previousPalm: Vec2?
+    private var selector = HandSelector()
     private var stats = PipelineStats()
     private var lastFrameTime: Double?
     private var strokeCount = 0
@@ -107,7 +113,7 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         }
         videoQueue.async {
             let outputs = self.engine.reset()
-            self.previousPalm = nil
+            self.selector.reset()
             self.lastFrameTime = nil
             self.onFrame?(FrameReport(time: Self.hostNow(), hand: nil, outputs: outputs,
                                       snapshot: self.engine.snapshot, stats: self.stats))
@@ -194,14 +200,14 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         let width = CVPixelBufferGetWidth(pixels)
         let height = CVPixelBufferGetHeight(pixels)
         let aspect = Double(width) / Double(max(1, height))
+        let mirrored = connection.isVideoMirrored
 
         var hands: [HandSample] = []
         let handler = VNImageRequestHandler(cvPixelBuffer: pixels, orientation: .up, options: [:])
         if (try? handler.perform([request])) != nil {
-            hands = (request.results ?? []).compactMap { Self.handSample(from: $0, aspect: aspect) }
+            hands = (request.results ?? []).compactMap { Self.handSample(from: $0, aspect: aspect, imageMirrored: mirrored) }
         }
-        let hand = HandSelector.select(hands, previousPalm: previousPalm)
-        previousPalm = hand?.palmCenter
+        let hand = selector.select(hands, at: t, locked: engine.isEngaged)
 
         let outputs = engine.process(hand, at: t)
         let end = Self.hostNow()
@@ -216,8 +222,9 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         stats.latencyMs += ((end - t) * 1000 - stats.latencyMs) * 0.1
         stats.width = width
         stats.height = height
+        stats.imageMirrored = mirrored
 
-        onFrame?(FrameReport(time: t, hand: hand, outputs: outputs, snapshot: engine.snapshot, stats: stats,
+        onFrame?(FrameReport(time: t, hand: hand, hands: hands, outputs: outputs, snapshot: engine.snapshot, stats: stats,
                              frameProcessingMs: (end - begin) * 1000, frameLatencyMs: (end - t) * 1000, stroke: stroke))
     }
 
@@ -237,11 +244,12 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             switch output {
             case let .fling(vx, vy):
                 Log.gestures.notice("fling emitted vx=\(vx, format: .fixed(precision: 0)) vy=\(vy, format: .fixed(precision: 0))")
-            case .touchBegan:
-                Log.gestures.notice("touch began, pinch ratio \(self.engine.snapshot.pinchRatio ?? -1, format: .fixed(precision: 2))")
-            case .touchEnded, .click, .pressBegan, .catchGlide:
+            case .touchBegan, .scrollBegan:
+                let m = engine.snapshot.touch
+                Log.gestures.notice("\(String(describing: output), privacy: .public): thumb-index \(m.thumbIndex ?? -1, format: .fixed(precision: 3)), thumb-middle \(m.thumbMiddle ?? -1, format: .fixed(precision: 3)), index-middle \(m.indexMiddle ?? -1, format: .fixed(precision: 3))")
+            case .touchEnded, .click, .pressBegan, .catchGlide, .scrollEnded:
                 Log.gestures.notice("\(String(describing: output), privacy: .public)")
-            case .pointerMoved:
+            case .pointerMoved, .scrolled:
                 break
             }
         }
@@ -259,13 +267,24 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
     /// Vision points are normalized with a bottom-left origin. Convert to the
     /// engine's mirrored, y-down frame measured in image heights.
-    static func handSample(from observation: VNHumanHandPoseObservation, aspect: Double) -> HandSample? {
+    ///
+    /// Capture buffers are not mirrored (only the preview is), so a camera
+    /// facing the user sees the right hand as a right hand, and Vision's label
+    /// is the physical hand. Should a connection deliver mirrored frames,
+    /// `imageMirrored` flips the label back.
+    static func handSample(from observation: VNHumanHandPoseObservation, aspect: Double, imageMirrored: Bool) -> HandSample? {
         guard let points = try? observation.recognizedPoints(.all) else { return nil }
         var joints: [HandJoint: JointPoint] = [:]
         for (name, joint) in jointNames {
             guard let p = points[name], p.confidence > 0 else { continue }
-            joints[joint] = JointPoint(Vec2((1 - p.location.x) * aspect, 1 - p.location.y), confidence: Double(p.confidence))
+            let x = imageMirrored ? p.location.x : 1 - p.location.x
+            joints[joint] = JointPoint(Vec2(x * aspect, 1 - p.location.y), confidence: Double(p.confidence))
         }
-        return joints.isEmpty ? nil : HandSample(joints)
+        let label: ScrollpageCore.Chirality? = switch observation.chirality {
+        case .left: .left
+        case .right: .right
+        default: nil
+        }
+        return joints.isEmpty ? nil : HandSample(joints, chirality: ScrollpageCore.Chirality.physical(visionLabel: label, imageMirrored: imageMirrored))
     }
 }

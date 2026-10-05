@@ -22,7 +22,7 @@ struct NoiseSource {
     }
 }
 
-struct HandPose {
+struct HandPose: Equatable {
     /// Mean of the four knuckles, in image-height units (y-down, mirrored).
     var palm = Vec2(0.8, 0.5)
     /// Wrist to middle knuckle, image-height units.
@@ -41,6 +41,11 @@ struct HandPose {
     var hidden: Set<HandJoint> = []
     /// Rotation of the whole hand about the palm, degrees, clockwise on screen.
     var tilt = 0.0
+    /// Vision's label for the hand.
+    var chirality: Chirality? = .right
+    /// When set, the middle finger curls to the thumb and index tips: its tip
+    /// sits this far (hand sizes) from the point midway between them.
+    var middleTouch: Double?
 
     /// The control toggle pose: five fingers spread, palm up and facing the camera.
     static var raisedPalm: HandPose {
@@ -57,10 +62,14 @@ struct SyntheticHand {
     /// Jitter shared by every joint in a frame, as real trackers shift the whole hand.
     var commonSigma: Double
 
-    init(seed: UInt64 = 42, sigma: Double = 0.0015, commonSigma: Double = 0) {
+    /// Jitter of a touching fingertip relative to the one it touches, hand sizes.
+    var touchSigma: Double
+
+    init(seed: UInt64 = 42, sigma: Double = 0.0015, commonSigma: Double = 0, touchSigma: Double = 0.006) {
         noise = NoiseSource(seed: seed)
         self.sigma = sigma
         self.commonSigma = commonSigma
+        self.touchSigma = touchSigma
     }
 
     mutating func sample(_ pose: HandPose) -> HandSample {
@@ -117,6 +126,14 @@ struct SyntheticHand {
             joints[.thumbTip] = joints[.indexTip]! + Vec2(-pose.pinchRatio * s, 0)
         }
 
+        if let reach = pose.middleTouch {
+            let target = (joints[.thumbTip]! + joints[.indexTip]!) * 0.5 + Vec2(0, -reach * s)
+            let base = joints[.middleMCP]!
+            joints[.middlePIP] = base + Vec2(-0.05 * s, -0.45 * s)
+            joints[.middleDIP] = base + (target - base) * 0.8 + Vec2(0, -0.1 * s)
+            joints[.middleTip] = target
+        }
+
         let angle = pose.tilt * .pi / 180
         func rotate(_ v: Vec2) -> Vec2 {
             let d = v - p
@@ -129,7 +146,21 @@ struct SyntheticHand {
             points[j] = JointPoint(rotate(v) + shift + Vec2(noise.gaussian(sigma), noise.gaussian(sigma)),
                                    confidence: pose.hidden.contains(j) ? 0.1 : 0.9)
         }
-        return HandSample(points)
+        // Vision places touching fingertips together: their distance jitters far
+        // less than the joints themselves do apart (measured: 0.026 median, 0.039 at the
+        // 95th percentile, in hand sizes).
+        func follow(_ tip: HandJoint, from anchor: Vec2, ideal: Vec2) {
+            let jitter = Vec2(noise.gaussian(touchSigma * s), noise.gaussian(touchSigma * s))
+            points[tip]?.location = anchor + (rotate(joints[tip]!) - rotate(ideal)) + jitter
+        }
+        if pose.pinchRatio < 0.1 {
+            follow(.thumbTip, from: points[.indexTip]!.location, ideal: joints[.indexTip]!)
+        }
+        if let reach = pose.middleTouch, reach < 0.1 {
+            let mid = (points[.thumbTip]!.location + points[.indexTip]!.location) * 0.5
+            follow(.middleTip, from: mid, ideal: (joints[.thumbTip]! + joints[.indexTip]!) * 0.5)
+        }
+        return HandSample(points, chirality: pose.chirality)
     }
 }
 
@@ -138,6 +169,9 @@ final class Rig {
     let engine: GestureEngine
     var hand: SyntheticHand
     var pose = HandPose()
+    /// Other hands in the frame, listed before `pose` so order can't pick the hand.
+    var others: [HandPose] = []
+    var selector = HandSelector()
     var t = 100.0
     let dt: Double
     private(set) var outputs: [(t: Double, output: GestureOutput)] = []
@@ -168,7 +202,9 @@ final class Rig {
         for i in 1...frames {
             t += dt
             update?(Double(i) / Double(frames), &pose)
-            let sample = visible && !(dropped?.contains(i) ?? false) ? hand.sample(pose) : nil
+            let seen = visible && !(dropped?.contains(i) ?? false)
+            let hands = seen ? others.map { hand.sample($0) } + [hand.sample(pose)] : others.map { hand.sample($0) }
+            let sample = selector.select(hands, at: t, locked: engine.isEngaged)
             for o in engine.process(sample, at: t) { outputs.append((t, o)) }
             let snapshot = engine.snapshot
             if snapshot.toggled { toggles.append((t, snapshot.controlOn)) }
@@ -185,8 +221,21 @@ final class Rig {
 
     func pinch(_ on: Bool, over duration: Double = 0.05) {
         let from = pose.pinchRatio
-        let to = on ? 0.1 : 0.8
+        let to = on ? Rig.touching : 0.8
         run(duration) { p, pose in pose.pinchRatio = from + (to - from) * p }
+    }
+
+    /// Fingertips touching, the median measured on the webcam.
+    static let touching = 0.03
+
+    /// Brings thumb, index and middle tips together (or opens the hand).
+    func threeFinger(_ on: Bool, over duration: Double = 0.05) {
+        let from = pose.pinchRatio
+        let to = on ? Rig.touching : 0.8
+        run(duration) { p, pose in
+            pose.pinchRatio = from + (to - from) * p
+            pose.middleTouch = on ? (p >= 1 ? Rig.touching : 0.3 * (1 - p) + Rig.touching * p) : nil
+        }
     }
 
     /// Minimum-jerk move of the palm by `delta` (image-height units).
@@ -223,6 +272,16 @@ final class Rig {
         }
         return (net, path)
     }
+
+    var scrolls: [Vec2] {
+        outputs.compactMap { if case let .scrolled(dx, dy) = $0.output { return Vec2(dx, dy) } else { return nil } }
+    }
+
+    var scrollEnds: [Vec2] {
+        outputs.compactMap { if case let .scrollEnded(vx, vy) = $0.output { return Vec2(vx, vy) } else { return nil } }
+    }
+
+    var scrollTravel: Vec2 { scrolls.reduce(.zero, +) }
 
     func count(_ match: GestureOutput) -> Int { outputs.filter { $0.output == match }.count }
 }

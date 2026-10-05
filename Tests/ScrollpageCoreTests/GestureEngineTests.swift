@@ -100,12 +100,14 @@ final class GestureEngineWebcamTests: XCTestCase {
         XCTAssertLessThan(net, 0.3 * 165 * 1.6)
     }
 
+    /// A touch must be seen on three frames, so a tap at 25 fps keeps contact
+    /// for at least 0.12 s.
     func testTapClicksWithoutMoving() {
         for seed in UInt64(1)...5 {
             let rig = Rig.webcam(seed: seed)
             rig.hold(0.5)
             rig.pinch(true, over: 0.08)
-            rig.hold(0.08)
+            rig.hold(0.12)
             rig.pinch(false, over: 0.08)
             rig.hold(0.5)
             XCTAssertEqual(rig.clicks, [1], "seed \(seed)")
@@ -212,7 +214,7 @@ final class GestureEngineClickTests: XCTestCase {
 
     func testHandArrivingAlreadyPinchedDoesNotTouchUntilItOpens() {
         let rig = Rig()
-        rig.pose.pinchRatio = 0.1
+        rig.pose.pinchRatio = Rig.touching
         rig.pose.fingersOpen = false
         rig.run(0.3, visible: false)
         rig.hold(0.6)

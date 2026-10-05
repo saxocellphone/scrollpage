@@ -29,31 +29,72 @@ public struct ScrollEvent: Equatable, Sendable {
     }
 }
 
-/// Turns flings into the event stream of a trackpad flick: a short finger-down
-/// gesture (began, changed…, ended) and then a momentum glide (begin,
-/// continue…, end).
+/// Turns flings and drags into the event stream of a trackpad scroll.
 ///
-/// AppKit drops a gesture whose began is followed straight by ended, and the
-/// momentum after it, so nothing scrolls. It needs changed events on separate
-/// frames, so the gesture lasts `gestureTicks` ticks before the glide takes over.
+/// A fling is a flick: a short finger-down gesture (began, changed…, ended) and
+/// then a momentum glide (begin, continue…, end). AppKit drops a gesture whose
+/// began is followed straight by ended, and the momentum after it, so nothing
+/// scrolls. It needs changed events on separate frames, so the gesture lasts
+/// `gestureTicks` ticks before the glide takes over.
+///
+/// A drag is two fingers moving on the pad: began with the first motion,
+/// changed while it moves, ended when the fingers lift, then the glide. Drag
+/// distance arrives with each camera frame and is eased out over the ticks
+/// (time constant `dragTau`), so the content moves smoothly between frames.
 public struct FlingSequencer: Sendable {
     public static let gestureTicks = 3
+    public static let dragTau = 0.03
 
     public private(set) var momentum: MomentumScroller
     private var remainder = Vec2.zero
     private var gestureTicksLeft = 0
     private var momentumPosted = false
+    public private(set) var isDragging = false
+    private var dragBegan = false
+    /// Drag distance not posted yet.
+    private var pending = Vec2.zero
 
     public init(momentum: MomentumScroller = MomentumScroller()) {
         self.momentum = momentum
     }
 
     /// True while there is anything left to post.
-    public var isActive: Bool { gestureTicksLeft > 0 || momentumPosted || momentum.isActive }
+    public var isActive: Bool { isDragging || gestureTicksLeft > 0 || momentumPosted || momentum.isActive }
+
+    /// Fingers down for a drag: ends any fling or glide still under way.
+    public mutating func beginDrag() -> [ScrollEvent] {
+        let out = stop()
+        isDragging = true
+        return out
+    }
+
+    /// Adds content distance (points, y-down) to the drag.
+    public mutating func drag(_ d: Vec2) {
+        guard isDragging else { return }
+        pending += d
+    }
+
+    /// Fingers up: posts the rest of the drag, ends the gesture, and glides at
+    /// `velocity` (points per second) if the drag had begun.
+    public mutating func endDrag(velocity: Vec2) -> [ScrollEvent] {
+        guard isDragging else { return [] }
+        var out: [ScrollEvent] = []
+        if dragBegan {
+            let e = event(pending, phase: .changed)
+            if e.dx != 0 || e.dy != 0 { out.append(e) }
+            out.append(ScrollEvent(phase: .ended))
+            if velocity.length > 0 { momentum.fling(velocity) }
+        }
+        isDragging = false
+        dragBegan = false
+        pending = .zero
+        remainder = .zero
+        return out
+    }
 
     /// Starts (or extends) a fling. `dt` is the tick interval, for the began delta.
     public mutating func fling(_ velocity: Vec2, dt: Double) -> [ScrollEvent] {
-        var out: [ScrollEvent] = []
+        var out = endDrag(velocity: .zero)
         if momentumPosted {
             out.append(ScrollEvent(momentum: .end))
             momentumPosted = false
@@ -70,10 +111,13 @@ public struct FlingSequencer: Sendable {
     /// Stops any glide, ending whatever phase is open.
     public mutating func stop() -> [ScrollEvent] {
         var out: [ScrollEvent] = []
-        if gestureTicksLeft > 0 { out.append(ScrollEvent(phase: .ended)) }
+        if gestureTicksLeft > 0 || dragBegan { out.append(ScrollEvent(phase: .ended)) }
         if momentumPosted { out.append(ScrollEvent(momentum: .end)) }
         gestureTicksLeft = 0
         momentumPosted = false
+        isDragging = false
+        dragBegan = false
+        pending = .zero
         momentum.stop()
         remainder = .zero
         return out
@@ -81,6 +125,18 @@ public struct FlingSequencer: Sendable {
 
     public mutating func tick(_ dt: Double) -> [ScrollEvent] {
         var out: [ScrollEvent] = []
+        if isDragging {
+            guard pending != .zero else { return out }
+            var step = pending * (1 - exp(-max(0, dt) / Self.dragTau))
+            if (pending - step).length < 0.5 { step = pending }
+            pending = pending - step
+            let e = event(step, phase: dragBegan ? .changed : .began)
+            if e.dx != 0 || e.dy != 0 {
+                out.append(e)
+                dragBegan = true
+            }
+            return out
+        }
         if gestureTicksLeft > 0 {
             out.append(event(momentum.step(dt), phase: .changed))
             gestureTicksLeft -= 1

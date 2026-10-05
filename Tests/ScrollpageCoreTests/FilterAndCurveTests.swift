@@ -74,31 +74,6 @@ final class PointerAccelerationTests: XCTestCase {
     }
 }
 
-final class PinchDetectorTests: XCTestCase {
-    func testHysteresisAndDebounce() {
-        var p = PinchDetector()
-        XCTAssertFalse(p.update(0.2))
-        XCTAssertTrue(p.update(0.2), "engages on the second frame below threshold")
-        XCTAssertTrue(p.update(0.33))
-        XCTAssertTrue(p.update(0.37), "between thresholds holds the pinch")
-        XCTAssertTrue(p.update(0.45))
-        XCTAssertTrue(p.update(0.2), "a single high frame does not release")
-        XCTAssertTrue(p.update(0.45))
-        XCTAssertFalse(p.update(0.45))
-        XCTAssertFalse(p.update(0.25), "between thresholds stays released")
-    }
-
-    func testOcclusionHoldsState() {
-        var p = PinchDetector()
-        p.update(0.1)
-        p.update(0.1)
-        for _ in 0..<10 { XCTAssertTrue(p.update(nil)) }
-        p.update(0.5)
-        p.update(0.5)
-        for _ in 0..<10 { XCTAssertFalse(p.update(nil)) }
-    }
-}
-
 final class MomentumScrollerTests: XCTestCase {
     func testGlideDistanceIsVelocityTimesTau() {
         var m = MomentumScroller()
@@ -157,13 +132,5 @@ final class HandSampleTests: XCTestCase {
         let fist = gen.sample(HandPose(pinchRatio: 0.8, fingersOpen: false))
         XCTAssertFalse(fist.isOpenHand)
         XCTAssertEqual(fist.handSize!, 0.18, accuracy: 0.01)
-    }
-
-    func testSelectorPrefersContinuityThenSize() {
-        var gen = SyntheticHand(seed: 2, sigma: 0)
-        let near = gen.sample(HandPose(palm: Vec2(0.4, 0.5), size: 0.15))
-        let big = gen.sample(HandPose(palm: Vec2(1.2, 0.5), size: 0.22))
-        XCTAssertEqual(HandSelector.select([near, big], previousPalm: nil), big)
-        XCTAssertEqual(HandSelector.select([near, big], previousPalm: Vec2(0.42, 0.5)), near)
     }
 }
