@@ -85,6 +85,27 @@ struct PermissionCheck {
         Log.permissions.notice("\(reason, privacy: .public): \(summary, privacy: .public)")
     }
 
+    /// An entry left by a build with another signature shows as switched on in
+    /// System Settings, does nothing, and stops the system prompt from adding
+    /// this build. Removing Scrollpage's own entries lets the prompt start fresh.
+    static func resetStaleApproval() {
+        guard let id = Bundle.main.bundleIdentifier else { return }
+        for service in ["Accessibility", "PostEvent"] {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+            process.arguments = ["reset", service, id]
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            do {
+                try process.run()
+                process.waitUntilExit()
+                Log.permissions.notice("tccutil reset \(service, privacy: .public): exit \(process.terminationStatus)")
+            } catch {
+                Log.permissions.error("tccutil reset \(service, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
     /// `Scrollpage --check-permissions`. Run through LaunchServices so the app,
     /// not the shell that launched it, is the process TCC checks:
     /// `open -W -n --stdout "$(tty)" build/Scrollpage.app --args --check-permissions`

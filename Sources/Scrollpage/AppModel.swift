@@ -109,6 +109,7 @@ final class AppModel: ObservableObject {
             }
         }
         pushSettings()
+        PermissionCheck.current().log("launch")
         driver.setPostingAllowed(accessibilityTrusted && enabled)
         observeSystem()
         refreshCameras()
@@ -161,6 +162,7 @@ final class AppModel: ObservableObject {
     }
 
     func requestAccessibility() {
+        if !Permissions.accessibilityTrusted { PermissionCheck.resetStaleApproval() }
         Permissions.promptForAccessibility()
         if !Permissions.accessibilityTrusted { Permissions.openAccessibilitySettings() }
     }
@@ -270,6 +272,7 @@ final class AppModel: ObservableObject {
         let trusted = Permissions.accessibilityTrusted
         let status = Permissions.cameraStatus
         if trusted != accessibilityTrusted {
+            PermissionCheck.current().log("trust changed")
             accessibilityTrusted = trusted
             driver.setPostingAllowed(trusted && enabled)
         }
