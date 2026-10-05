@@ -51,8 +51,8 @@ struct OnboardingView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Label("Only your right hand drives Scrollpage; the preview tags it R. Fingertips must really touch.",
                       systemImage: "hand.point.up.left")
-                Label("To turn gestures off or back on, hold up your right hand with all five fingers spread, still, for a second.",
-                      systemImage: "hand.raised.fingers.spread")
+                Label("Hold a peace sign to turn gestures on or off: index and middle up in a V, thumb folded over the other two, still for half a second.",
+                      systemImage: "power")
             }
             .font(.callout)
             .foregroundStyle(.secondary)

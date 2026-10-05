@@ -7,7 +7,7 @@ enum PillState: Equatable {
     case on, paused, handInView, noHand, allowAccessibility, cameraUnavailable
     case scroll(String)
     case gesturesOn, gesturesOff
-    /// A raised palm is being held; `turningOn` says which way it will toggle.
+    /// A peace sign is being held; `turningOn` says which way it will toggle.
     case holding(progress: Double, turningOn: Bool)
 
     var label: String {
@@ -46,9 +46,9 @@ final class AppModel: ObservableObject {
         static let onboarded = "onboarded"
     }
 
-    /// Control: the menu switch and the raised-palm gesture both set it. Turned
-    /// off by the gesture, the camera keeps watching for the palm to turn it back
-    /// on; turned off from the menu, the camera stops.
+    /// Control: the menu switch and the peace-sign gesture both set it. Turned
+    /// off by the gesture, the camera keeps watching for the peace sign to turn it
+    /// back on; turned off from the menu, the camera stops.
     @Published var enabled: Bool {
         didSet {
             if !togglingByGesture { pausedByGesture = false }
@@ -146,7 +146,7 @@ final class AppModel: ObservableObject {
     }
 
     var statusLine: String {
-        if pausedByGesture { return "Gestures off. Hold up an open hand, fingers spread, to turn on" }
+        if pausedByGesture { return "Gestures off. Hold a peace sign to turn on" }
         if !enabled { return "Paused" }
         if let cameraError { return cameraError }
         if cameraStatus == .denied || cameraStatus == .restricted { return "Camera access is off" }
@@ -378,7 +378,7 @@ final class AppModel: ObservableObject {
         pill.show(on ? .gesturesOn : .gesturesOff)
     }
 
-    /// Progress appears once the palm has been held still briefly, and the pill
+    /// Progress appears once the peace sign has been held still briefly, and the pill
     /// fades as soon as the hold is abandoned.
     private func showHoldProgress(_ snapshot: GestureSnapshot) {
         let progress = snapshot.toggleProgress
