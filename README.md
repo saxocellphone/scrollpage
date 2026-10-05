@@ -35,35 +35,60 @@ going in one direction.
 Only fingertips that actually touch count. Fingertips held just apart, however
 close, never move the pointer: a hand that is almost pinching is a finger
 hovering over the pad. Distances are measured between fingertips in hand sizes
-(wrist to middle knuckle), and the thresholds come from recordings on a 1080p
-USB webcam at 30 fps (four sessions, 875 hand frames):
+(wrist to middle knuckle). The thresholds come from two guided calibration runs
+(`--calibrate-pinch`, frames after each step's first 1.5 s) and four earlier
+recordings, on a 1080p USB webcam at 30 fps:
 
 | Thumb tip to index tip | Hand sizes |
 | --- | --- |
-| Touching, all frames: median / p90 / p95 / p99 | 0.026 / 0.034 / 0.039 / 0.043 |
-| Touching, during held pinches: p50 / p95 / p98 | 0.026 / 0.039 / 0.042 |
-| Hovering just apart: p10 / p25 / median / p75 | 0.129 / 0.158 / 0.189 / 0.226 |
+| Touching, calibration run 1: median / p90 / p95 | 0.045 / 0.059 / 0.067 |
+| Touching, calibration run 2: median / p90 / p95 | 0.081 / 0.107 / 0.112 |
+| Touching, earlier recordings: median / p95 | 0.026 / 0.039 |
+| Hovering a hair apart, run 2 (the tightest): p5 / median / p95 | 0.079 / 0.099 / 0.120 |
+| Hovering just apart, earlier recordings: p10 / median | 0.129 / 0.189 |
 | Open hand | 0.3 and up |
 
-- **Enter at 0.06, leave at 0.10.** Between the touching cluster and the
-  hovering band (0.06 to 0.10) there were almost no frames, so entering just
-  above the touching ceiling and leaving in that gap means a near touch never
-  counts and a held touch never flickers off. Above 0.08 the fingers are
-  parting, so the pointer stops: letting go doesn't drag it.
-- **Three frames to confirm** (0.1 s at 30 fps). A frame that wobbles out to
-  between 0.06 and 0.10 doesn't count, but doesn't start the count over either.
-  A touch also needs the fingers to have been seen apart first, so a hand that
-  arrives already pinched doesn't grab.
-- **Confident fingertips only.** Fingertips Vision reports with confidence
-  under 0.5 (touching frames measured 0.70 at p5) can't start a touch. During
-  a touch, unreadable frames hold it for 0.2 s; after that it ends without a
-  click.
+- **Enter at 0.08, leave at 0.12.** Run 2's touch and hover overlap (touching
+  reads up to 0.11, hovering down to 0.08), so no single line splits every
+  frame: entering below nearly all hovering frames and leaving above nearly all
+  touching ones keeps a hover from ever starting a touch and a held touch from
+  flickering off. Starting at 0.09 already caught run 2's hover. Above 0.10 the
+  fingers are parting, so the pointer stops: letting go doesn't drag it.
+- **Three frames to confirm** (0.1 s at 30 fps). Up to two frames that wobble
+  out to between 0.08 and 0.12 don't count, but don't start the count over
+  either; a third does. Forgiving any number let run 2's hover, which brushes
+  0.08 every second or so, add up to a touch. A touch also needs the fingers to
+  have been seen apart (above 0.12) first, so a hand that arrives already
+  pinched doesn't grab; letting go counts, so a near touch that let go doesn't
+  swallow the real touch right after it.
+- **Confident fingertips only.** Thumb and index tips Vision reports with
+  confidence under 0.4, and middle tips under 0.3 (half hidden behind the
+  thumb in the three-finger pose, they read 0.37 median), can't start a touch.
+  During a touch, unreadable frames hold it for 0.2 s; after that it ends
+  without a click.
 - **No flick while reaching.** A fast move with the thumb within 0.25 of the
   index is someone reaching for a pinch, so it doesn't fling.
 
+Replaying the two calibration runs through the engine (`--diagnose --replay`,
+the same 1.5 s left out of each step), with the earlier thresholds (0.06 /
+0.10, all three tips within 0.12) and now:
+
+| Pose | Want | Run 1 earlier → now | Run 2 earlier → now |
+| --- | --- | --- | --- |
+| Touching | pinch held | 95 % → 99 % | 0 % → 50 % |
+| Hovering a hair apart | nothing | 0 % → 9 % (see below) | 0 % → 0 % |
+| Three fingertips together | scroll held | 0 % → 100 % | 0 % → 56 % |
+| Touching, other fingers curled | nothing | fingers weren't curled | 0 % → 0 % |
+
+Run 1's hover has one 0.4 s touch 2.5 s in, while the hand was still arriving
+(the tips swung in to 0.058, a real brush); from 3 s on it's 0 %. Run 2's
+three-finger step ends with an OK sign for its last second, which the pinch
+correctly picks up. In run 1's curled step the other fingers stayed straight
+(tip-to-wrist ratio 1.1, angle 160°), so it is an OK sign and pinches.
+
 Your hand and camera may differ. `Scrollpage --calibrate-pinch` walks you
-through open, touching, hovering and three-finger poses and prints your
-percentiles next to the thresholds (see [Diagnostics](#diagnostics)).
+through open, touching, hovering, three-finger and curled poses and prints
+your percentiles next to the thresholds (see [Diagnostics](#diagnostics)).
 
 ### The OK sign
 
@@ -150,13 +175,37 @@ twice as much, so one jittery frame doesn't decide it; slower than 150 pt/s
 doesn't glide. Any new touch stops the glide at once, like a finger landing on
 the pad.
 
+Three tips can't meet at one point, so each pair has its own limit, from the
+calibration runs' three-finger step:
+
+| Three fingertips together | Thumb–index | Thumb–middle | Index–middle | Thumb to the nearer |
+| --- | --- | --- | --- | --- |
+| Run 1: median / p90 | 0.108 / 0.168 | 0.106 / 0.131 | 0.202 / 0.219 | 0.090 / 0.109 |
+| Run 2 (0.5 to 4.5 s, while held): median / p90 | 0.103 / 0.163 | 0.069 / 0.128 | 0.146 / 0.222 | 0.057 / 0.084 |
+| Starts at or below | 0.18 | 0.18 | 0.26 | 0.12 |
+| Lets go above | 0.22 | 0.22 | 0.32 | – |
+
+Index and middle sit side by side on the thumb, a fingertip apart, so their
+limit is wider; the old single limit of 0.12 for all three never started a
+scroll in either run. The thumb must also touch one of them: a hand closing
+between quick pinches brings index and middle together (0.09 apart) with the
+thumb 0.14 from both, inside every pair limit, and would otherwise scroll.
+While scrolling, the content follows only as long as the pairs stay within
+0.20 / 0.29, so parting fingers don't jerk it.
+
 The two touches can't be confused. A plain pinch needs the middle tip at least
-0.22 hand sizes from the thumb and index tips (93 % of real touching frames
-clear that); three-finger needs all three tips within 0.12 of each other (in
-ordinary use, no three consecutive frames came that close). In between,
-neither starts. Once a touch begins its kind is locked until you let go: the
-middle finger drifting in during a pinch doesn't turn it into a scroll, and the
-middle finger leaving ends a scroll rather than turning it into a pinch.
+0.18 from the thumb and index tips, which is where the three-finger
+thumb–middle limit ends, so a frame is one or the other (exactly on the line,
+three-finger). Real pinches clear it with room to spare (the middle tip 0.52
+away at p5 in calibration; 0.18 to 0.22 in quick pinches on a small hand, which
+the old 0.22 rejected), and across all recordings no three consecutive frames
+of a pinch came inside the three-finger limits. The middle finger also isn't
+extended in 94 % of three-finger frames, so the OK sign alone rules out a
+pinch there. Once a touch begins its kind is locked until you let go: the middle
+finger drifting in during a pinch doesn't turn it into a scroll, and the middle
+finger leaving ends a scroll rather than turning it into a pinch. A scroll
+given up because the middle tip couldn't be read resumes when it can be,
+without the thumb and index having to part first.
 
 ### Right hand only
 
@@ -375,15 +424,22 @@ asks for camera access on behalf of the terminal app.)
 
 ```bash
 build/Scrollpage.app/Contents/MacOS/Scrollpage --calibrate-pinch [--record calibration.jsonl]
+build/Scrollpage.app/Contents/MacOS/Scrollpage --calibrate-pinch --replay calibration.jsonl
 ```
 
 `--calibrate-pinch` is a guided measurement, about a minute, with a countdown
 before each step: right hand open; thumb and index touching; thumb and index
 just apart, not touching; thumb, index and middle touching; touching with the
-other fingers curled; left hand only. It prints fingertip distance percentiles
-for each step, how the current thresholds classify each, suggested thresholds,
-and whether Vision's left/right labels match the hand you used. The frames are
-saved (to `/tmp` unless `--record` is given) for `--replay`.
+other fingers curled (which must not count); left hand only. Each step records
+1.5 s longer than it measures: the report leaves out that first stretch while
+the hand gets into the pose. It prints fingertip distance percentiles for each
+step (each pair for three fingers), how the current thresholds classify each,
+suggested thresholds, and whether Vision's left/right labels match the hand
+you used. The frames are saved (to `/tmp` unless `--record` is given); with
+`--replay` it reports on a saved run with the current thresholds, and
+`--diagnose --replay` adds a table of what the engine did in each pose (pinch
+or scroll held, begins, clicks, travel), with control switched back on at each
+step since holding the open hand still toggles it off.
 
 `--ring-demo [seconds]` cycles the touch ring through touch, click, drag and
 lift at the pointer; `--render-ring states.png [single.png [pills.png]]`
@@ -441,7 +497,8 @@ flings and how many scroll events each posted.
    stops. The pointer stays put throughout.
 7. Do the same with the left hand alone: nothing happens.
 8. Optional: `build/Scrollpage.app/Contents/MacOS/Scrollpage --calibrate-pinch`
-   and compare your percentiles with the thresholds above.
+   and compare your percentiles with the thresholds above; then
+   `--diagnose --replay` the saved file for what the engine did in each pose.
 
 ## Credits
 
