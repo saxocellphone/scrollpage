@@ -2,6 +2,9 @@ import AppKit
 
 let arguments = CommandLine.arguments
 
+if let index = arguments.firstIndex(of: "--calibrate-pinch") {
+    Calibration.run(arguments: Array(arguments[(index + 1)...]))
+}
 if let index = arguments.firstIndex(of: "--diagnose") {
     Diagnostics.run(arguments: Array(arguments[(index + 1)...]))
 }
