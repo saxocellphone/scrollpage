@@ -223,8 +223,17 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
             Log.gestures.notice("fast motion, no flick: \(blocked, privacy: .public)")
         }
         lastBlocked = blocked
-        for case let .fling(vx, vy) in outputs {
-            Log.gestures.notice("fling emitted vx=\(vx, format: .fixed(precision: 0)) vy=\(vy, format: .fixed(precision: 0))")
+        for output in outputs {
+            switch output {
+            case let .fling(vx, vy):
+                Log.gestures.notice("fling emitted vx=\(vx, format: .fixed(precision: 0)) vy=\(vy, format: .fixed(precision: 0))")
+            case .touchBegan:
+                Log.gestures.notice("touch began, pinch ratio \(self.engine.snapshot.pinchRatio ?? -1, format: .fixed(precision: 2))")
+            case .touchEnded, .click, .pressBegan:
+                Log.gestures.notice("\(String(describing: output), privacy: .public)")
+            case .pointerMoved:
+                break
+            }
         }
         return stroke
     }

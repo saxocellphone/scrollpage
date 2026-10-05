@@ -75,6 +75,7 @@ final class InputDriver {
         }
         switch output {
         case .touchBegan:
+            if scroller.isActive { Log.input.notice("glide caught by touch after \(self.stats.events) scroll events") }
             stopMomentum()
             syncToRealCursor()
         case let .pointerMoved(dx, dy):
@@ -167,9 +168,11 @@ final class InputDriver {
     /// (began, changed…, ended) followed by momentum events the app can interrupt.
     private func fling(_ velocity: Vec2) {
         systemNaturalScrolling = Permissions.systemNaturalScrolling
-        stats = ScrollStats()
         Log.input.notice("fling vx=\(velocity.x, format: .fixed(precision: 0)) vy=\(velocity.y, format: .fixed(precision: 0)) systemNatural=\(self.systemNaturalScrolling)")
-        post(scroller.fling(velocity, dt: tickInterval))
+        let events = scroller.fling(velocity, dt: tickInterval)
+        post(events.filter { $0.momentum == .end })
+        stats = ScrollStats()
+        post(events.filter { $0.momentum != .end })
         ensureTimer()
     }
 
