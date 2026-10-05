@@ -114,19 +114,21 @@ final class Rig {
 
     /// Noise and frame rate measured on a USB webcam (25 fps, hand ~0.12 image
     /// heights, palm jitter ~15 thousandths of a hand per frame).
-    static func webcam(seed: UInt64 = 42) -> Rig {
-        let rig = Rig(seed: seed, sigma: 0.0015, commonSigma: 0.0009, fps: 25)
+    static func webcam(seed: UInt64 = 42, fps: Double = 25) -> Rig {
+        let rig = Rig(seed: seed, sigma: 0.0015, commonSigma: 0.0009, fps: fps)
         rig.pose.size = 0.12
         return rig
     }
 
     /// Runs for `duration` seconds. `update` gets progress 0...1 and may change the pose.
-    func run(_ duration: Double, visible: Bool = true, _ update: ((Double, inout HandPose) -> Void)? = nil) {
+    /// Frames whose index (from 1) is in `dropped` have no hand, as when motion blur loses it.
+    func run(_ duration: Double, visible: Bool = true, dropped: ClosedRange<Int>? = nil,
+             _ update: ((Double, inout HandPose) -> Void)? = nil) {
         let frames = max(1, Int((duration / dt).rounded()))
         for i in 1...frames {
             t += dt
             update?(Double(i) / Double(frames), &pose)
-            let sample = visible ? hand.sample(pose) : nil
+            let sample = visible && !(dropped?.contains(i) ?? false) ? hand.sample(pose) : nil
             for o in engine.process(sample, at: t) { outputs.append((t, o)) }
         }
     }
@@ -140,9 +142,9 @@ final class Rig {
     }
 
     /// Minimum-jerk move of the palm by `delta` (image-height units).
-    func move(by delta: Vec2, over duration: Double) {
+    func move(by delta: Vec2, over duration: Double, dropped: ClosedRange<Int>? = nil) {
         let start = pose.palm
-        run(duration) { p, pose in
+        run(duration, dropped: dropped) { p, pose in
             let s = p * p * p * (10 - 15 * p + 6 * p * p)
             pose.palm = start + delta * s
         }

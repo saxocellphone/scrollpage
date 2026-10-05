@@ -24,6 +24,8 @@ struct FrameReport {
     var stats: PipelineStats
     var frameProcessingMs = 0.0
     var frameLatencyMs = 0.0
+    /// A stroke the flick detector judged this frame.
+    var stroke: StrokeReport?
 }
 
 /// Camera capture, Vision hand pose, and the gesture engine, all on one queue.
@@ -50,6 +52,8 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
     private var previousPalm: Vec2?
     private var stats = PipelineStats()
     private var lastFrameTime: Double?
+    private var strokeCount = 0
+    private var lastBlocked: String?
 
     enum PipelineError: LocalizedError {
         case noCamera
@@ -191,6 +195,7 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
 
         let outputs = engine.process(hand, at: t)
         let end = Self.hostNow()
+        let stroke = logGestures(outputs)
 
         if let last = lastFrameTime, t > last {
             let instant = 1 / (t - last)
@@ -203,7 +208,25 @@ final class CameraPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDelega
         stats.height = height
 
         onFrame?(FrameReport(time: t, hand: hand, outputs: outputs, snapshot: engine.snapshot, stats: stats,
-                             frameProcessingMs: (end - begin) * 1000, frameLatencyMs: (end - t) * 1000))
+                             frameProcessingMs: (end - begin) * 1000, frameLatencyMs: (end - t) * 1000, stroke: stroke))
+    }
+
+    private func logGestures(_ outputs: [GestureOutput]) -> StrokeReport? {
+        var stroke: StrokeReport?
+        if engine.flick.strokeCount != strokeCount {
+            strokeCount = engine.flick.strokeCount
+            stroke = engine.flick.lastStroke
+            if let stroke { Log.gestures.notice("\(stroke.summary, privacy: .public)") }
+        }
+        let blocked = engine.snapshot.flickBlocked
+        if let blocked, blocked != lastBlocked {
+            Log.gestures.notice("fast motion, no flick: \(blocked, privacy: .public)")
+        }
+        lastBlocked = blocked
+        for case let .fling(vx, vy) in outputs {
+            Log.gestures.notice("fling emitted vx=\(vx, format: .fixed(precision: 0)) vy=\(vy, format: .fixed(precision: 0))")
+        }
+        return stroke
     }
 
     private static let jointNames: [(VNHumanHandPoseObservation.JointName, HandJoint)] = [

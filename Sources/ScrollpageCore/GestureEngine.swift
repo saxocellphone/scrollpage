@@ -44,6 +44,8 @@ public struct GestureSnapshot: Equatable, Sendable {
     /// The pointer displacement this frame would produce if the hand were
     /// pinching. Used by diagnostics to measure drift of a still hand.
     public var potentialDelta = Vec2.zero
+    /// Why a fast motion this frame could not start a flick, if it couldn't.
+    public var flickBlocked: String?
 
     public init() {}
 }
@@ -156,6 +158,7 @@ public final class GestureEngine {
         let speed = measureSpeed(filtered, at: t)
         let pointerDelta = acceleration.displacement(for: delta, speed: speed)
 
+        var blocked: String?
         let ratio = hand.pinchRatio(handSize: size)
         let wasPinching = pinch.isPinching
         let pinching = pinch.update(ratio)
@@ -183,9 +186,18 @@ public final class GestureEngine {
             }
             touch = current
         } else if !pinching && touch == nil {
-            let mayFlick = t - lastRelease >= timing.flickAfterRelease
-                && t - (trackedSince ?? t) >= timing.flickAfterAcquire
-            if let f = flick.update(position: virtual, at: t, canStart: mayFlick && hand.isOpenHand) {
+            let afterRelease = t - lastRelease >= timing.flickAfterRelease
+            let afterAcquire = t - (trackedSince ?? t) >= timing.flickAfterAcquire
+            if !flick.inStroke && speed > flick.config.startSpeed {
+                if !hand.isOpenHand {
+                    blocked = "hand not open (\(hand.extendedFingerCount) fingers)"
+                } else if !afterRelease {
+                    blocked = "just released a pinch"
+                } else if !afterAcquire {
+                    blocked = "hand just appeared"
+                }
+            }
+            if let f = flick.update(position: virtual, at: t, canStart: afterRelease && afterAcquire && hand.isOpenHand) {
                 out.append(fling(for: f))
             }
         }
@@ -199,6 +211,7 @@ public final class GestureEngine {
         snapshot.handSize = size
         snapshot.speed = speed
         snapshot.potentialDelta = pointerDelta
+        snapshot.flickBlocked = blocked
         return out
     }
 

@@ -370,4 +370,58 @@ final class GestureEngineFlickTests: XCTestCase {
         let afterFling = rig.outputs.drop { if case .fling = $0.output { return false } else { return true } }
         XCTAssertEqual(afterFling.dropFirst().first?.output, .touchBegan)
     }
+
+    /// The USB webcam runs at 30 fps (25 in low light), so a flick spans only a
+    /// few frames of noisy tracking.
+    func testFlicksAtWebcamFrameRates() {
+        for fps in [25.0, 30.0] {
+            for (distance, duration) in [(0.6, 0.12), (1.0, 0.2), (1.5, 0.3)] {
+                for seed in 1...5 {
+                    let rig = Rig.webcam(seed: UInt64(seed), fps: fps)
+                    rig.hold(0.6)
+                    rig.move(by: Vec2(0, -distance * rig.pose.size), over: duration)
+                    rig.hold(0.6)
+                    let label = "\(fps) fps, \(distance) hu in \(duration) s, seed \(seed)"
+                    XCTAssertEqual(rig.flings.count, 1, label)
+                    XCTAssertLessThan(rig.flings.first?.y ?? 0, 0, label)
+                }
+            }
+        }
+    }
+
+    /// Motion blur at 30 fps can lose the hand for a few frames at the fastest
+    /// point of a flick; gaps within the tracking grace still count.
+    func testFlickSurvivesMotionBlurDropouts() {
+        for dropped in 1...4 {
+            for seed in 1...5 {
+                let rig = Rig.webcam(seed: UInt64(seed), fps: 30)
+                rig.hold(0.6)
+                rig.move(by: Vec2(0, rig.pose.size), over: 0.25, dropped: 3...(2 + dropped))
+                rig.hold(0.6)
+                XCTAssertEqual(rig.flings.count, 1, "\(dropped) frames dropped, seed \(seed)")
+                XCTAssertGreaterThan(rig.flings.first?.y ?? 0, 0)
+            }
+        }
+    }
+
+    func testRejectedStrokesSayWhy() {
+        let rig = Rig.webcam(fps: 30)
+        rig.hold(0.6)
+        rig.move(by: Vec2(0, -0.5 * rig.pose.size), over: 0.3)
+        rig.hold(0.6)
+        XCTAssertEqual(rig.engine.flick.lastStroke?.verdict, .tooSlow)
+
+        rig.move(by: Vec2(0, 2.0 * rig.pose.size), over: 0.7)
+        rig.hold(0.6)
+        XCTAssertEqual(rig.engine.flick.lastStroke?.verdict, .sweep)
+        XCTAssertTrue(rig.flings.isEmpty)
+
+        rig.pose.fingersOpen = false
+        rig.hold(0.3)
+        let step = 0.6 * rig.pose.size / 3.6
+        rig.run(0.12) { _, pose in pose.palm.y -= step }
+        let blocked = rig.engine.snapshot.flickBlocked
+        XCTAssertTrue(blocked?.hasPrefix("hand not open") ?? false, String(describing: blocked))
+        XCTAssertTrue(rig.flings.isEmpty)
+    }
 }

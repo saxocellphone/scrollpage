@@ -17,6 +17,31 @@ public struct Flick: Equatable, Sendable {
     }
 }
 
+/// How a stroke was judged, for diagnostics.
+public enum FlickVerdict: String, Sendable {
+    case flick
+    case tooBrief = "too brief"
+    case tooSlow = "too slow"
+    case offAxis = "off axis"
+    case tooShort = "too short"
+    case returnStroke = "return stroke"
+    case sweep = "sweep (too long)"
+}
+
+public struct StrokeReport: Equatable, Sendable {
+    public var start: Double
+    public var end: Double
+    public var peakSpeed: Double
+    /// Displacement over the stroke, in hand units.
+    public var displacement: Vec2
+    public var verdict: FlickVerdict
+
+    public var summary: String {
+        String(format: "stroke %@: %.0f ms, peak %.2f hu/s, moved (%.2f, %.2f) hu",
+               verdict.rawValue, (end - start) * 1000, peakSpeed, displacement.x, displacement.y)
+    }
+}
+
 public struct FlickConfig: Equatable, Sendable {
     /// Speed (hand units/s) that opens a candidate stroke.
     public var startSpeed = 1.5
@@ -59,6 +84,9 @@ public struct FlickDetector: Sendable {
     private var stroke: Stroke?
     private var mustRest = false
     public private(set) var lastFlick: Flick?
+    /// The last stroke judged, and how many have been, so callers can log each once.
+    public private(set) var lastStroke: StrokeReport?
+    public private(set) var strokeCount = 0
 
     public init(config: FlickConfig = FlickConfig()) {
         self.config = config
@@ -111,6 +139,7 @@ public struct FlickDetector: Sendable {
         if t - s.start > config.maxDuration {
             stroke = nil
             mustRest = true
+            report(s, endedAt: t, .sweep)
             return nil
         }
         let reversed = velocity.dot(s.peakVelocity) < 0
@@ -123,10 +152,22 @@ public struct FlickDetector: Sendable {
         return judge(s, endedAt: t)
     }
 
+    private mutating func report(_ s: Stroke, endedAt t: Double, _ verdict: FlickVerdict) {
+        lastStroke = StrokeReport(start: s.start, end: t, peakSpeed: s.peakSpeed, displacement: s.last - s.origin, verdict: verdict)
+        strokeCount += 1
+    }
+
     private mutating func judge(_ s: Stroke, endedAt t: Double) -> Flick? {
+        let flick = evaluate(s, endedAt: t)
+        report(s, endedAt: t, flick.verdict)
+        return flick.flick
+    }
+
+    private mutating func evaluate(_ s: Stroke, endedAt t: Double) -> (flick: Flick?, verdict: FlickVerdict) {
         let d = s.last - s.origin
         let duration = t - s.start
-        guard duration >= config.minDuration, s.peakSpeed >= config.minPeakSpeed else { return nil }
+        guard duration >= config.minDuration else { return (nil, .tooBrief) }
+        guard s.peakSpeed >= config.minPeakSpeed else { return (nil, .tooSlow) }
 
         let axis: FlickAxis
         let along: Double
@@ -137,19 +178,19 @@ public struct FlickDetector: Sendable {
             axis = .horizontal
             along = d.x
         } else {
-            return nil
+            return (nil, .offAxis)
         }
-        guard abs(along) >= config.minDistance else { return nil }
+        guard abs(along) >= config.minDistance else { return (nil, .tooShort) }
         let sign: Double = along > 0 ? 1 : -1
 
         if let last = lastFlick, last.axis == axis, last.sign != sign,
            t - last.time < config.returnWindow,
            s.peakSpeed < last.peakSpeed * config.returnSpeedRatio {
-            return nil
+            return (nil, .returnStroke)
         }
 
         let flick = Flick(axis: axis, sign: sign, peakSpeed: s.peakSpeed, distance: abs(along), time: t)
         lastFlick = flick
-        return flick
+        return (flick, .flick)
     }
 }
