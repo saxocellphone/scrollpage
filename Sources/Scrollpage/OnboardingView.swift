@@ -23,8 +23,8 @@ struct OnboardingView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .aspectRatio(model.stats.aspect, contentMode: .fit)
-            .frame(maxWidth: .infinity, maxHeight: 340)
+            .frame(maxWidth: .infinity)
+            .frame(height: 340)
             .background(Color.black.opacity(0.85))
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
 
