@@ -129,8 +129,9 @@ public struct HandSample: Equatable, Sendable {
 public struct HandSelectorConfig: Equatable, Sendable {
     /// A hand must be labelled right on this many frames in a row before it drives anything.
     public var acquireFrames = 3
-    /// During a gesture, the followed hand may be labelled left (or unknown) this
-    /// long, as Vision's label flickers, before the gesture is given up.
+    /// With no gesture under way, the followed hand may be labelled left (or
+    /// unknown) this long, as Vision's label flickers, before it is dropped.
+    /// During a gesture the label is ignored.
     public var flipGrace = 0.4
     /// Farthest a right-labelled palm may move between frames (image heights)
     /// and still be the same hand. A fast flick moves about 0.1.
@@ -138,6 +139,8 @@ public struct HandSelectorConfig: Equatable, Sendable {
     /// Farthest, in hand sizes, a palm with any other label may move and still
     /// be taken for the followed hand, so a left hand nearby isn't.
     public var maxFlippedJump = 1.0
+    /// Nor may its size change by more than this factor between frames.
+    public var maxSizeChange = 1.4
     /// Frames without the followed hand (motion blur) keep following it this
     /// long, so it resumes at once instead of being acquired again. A right
     /// hand seen elsewhere meanwhile is acquired straight away: tracking jumped.
@@ -150,13 +153,14 @@ public struct HandSelectorConfig: Equatable, Sendable {
 /// drives anything, even alone in the frame.
 ///
 /// While a gesture is under way (`locked`), the followed hand is tracked by
-/// palm position, so a brief flip of Vision's label doesn't drop a pinch. A
-/// flip lasting longer than `flipGrace` drops the hand, which ends the gesture
-/// as if the hand had left the frame.
+/// palm position and size alone: Vision relabels a hand left and right as its
+/// pose changes (an edge-on hand rolling, a fist closing), and that must not
+/// drop a pinch or a scroll. With no gesture under way, a hand labelled
+/// otherwise for longer than `flipGrace` is dropped.
 public struct HandSelector: Sendable {
     public var config: HandSelectorConfig
 
-    private var followed: (palm: Vec2, lastRight: Double, lastSeen: Double)?
+    private var followed: (palm: Vec2, size: Double, lastRight: Double, lastSeen: Double)?
     private var candidate: (palm: Vec2, frames: Int)?
     /// The hand the last `select` returned was just acquired rather than
     /// followed from an earlier frame, so it may be anywhere: whatever tracked
@@ -181,14 +185,15 @@ public struct HandSelector: Sendable {
             let hand = nearest(usable, to: f.palm)
             let jump = hand.map { $0.palmCenter!.distance(to: f.palm) } ?? .infinity
             if let hand, hand.chirality == .right, jump < config.maxJump {
-                followed = (hand.palmCenter!, t, t)
+                followed = (hand.palmCenter!, hand.handSize!, t, t)
                 return hand
             }
-            if let hand, jump < config.maxFlippedJump * hand.handSize! {
-                // The same hand with its label flipped: follow it through the
-                // grace, but only a gesture already under way may use it.
-                if t - f.lastRight <= config.flipGrace {
-                    followed = (hand.palmCenter!, f.lastRight, t)
+            if let hand, jump < config.maxFlippedJump * hand.handSize!,
+               max(hand.handSize!, f.size) / min(hand.handSize!, f.size) <= config.maxSizeChange {
+                // The same hand with its label flipped: a gesture under way
+                // keeps it; otherwise it is followed, unused, through the grace.
+                if locked || t - f.lastRight <= config.flipGrace {
+                    followed = (hand.palmCenter!, hand.handSize!, f.lastRight, t)
                     return locked ? hand : nil
                 }
             } else if t - f.lastSeen <= config.lostGrace, !usable.contains(where: { $0.chirality == .right }) {
@@ -209,7 +214,7 @@ public struct HandSelector: Sendable {
         let frames = continues ? candidate!.frames + 1 : 1
         if frames >= config.acquireFrames {
             candidate = nil
-            followed = (palm, t, t)
+            followed = (palm, pick.handSize!, t, t)
             isNewHand = true
             return pick
         }

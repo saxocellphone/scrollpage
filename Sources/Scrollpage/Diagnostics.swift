@@ -36,7 +36,7 @@ enum Diagnostics {
         setvbuf(stdout, nil, _IOLBF, 0)
         if let replayPath { replay(replayPath) }
         print("Scrollpage diagnostics (\(Int(seconds)) s). Hold your right hand up and keep it still for a few")
-        print("seconds (drift), then try pinch-move, quick pinches, three-finger scrolls and open-hand flicks.\n")
+        print("seconds (drift), then try pinch-move, quick pinches, fist scrolls and open-hand flicks.\n")
         withCamera {
             let pipeline = CameraPipeline()
             pipeline.updateSettings(savedSettings)
@@ -154,10 +154,8 @@ enum Diagnostics {
         var poses = PoseTally()
         var previousLabel: String?
         var strokeCount = 0
-        for line in text.split(separator: "\n") {
-            guard let data = line.data(using: .utf8),
-                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let t = object["t"] as? Double else { continue }
+        for object in GuidedRecording.frames(text) {
+            guard let t = object["t"] as? Double else { continue }
             let hands = decodeHands(object)
             let hand = selector.select(hands, at: t, locked: engine.isEngaged)
             let label = object["label"] as? String
@@ -191,7 +189,7 @@ enum Diagnostics {
         struct Stats {
             var frames = 0
             var pinchFrames = 0
-            var threeFrames = 0
+            var scrollFrames = 0
             var offFrames = 0
             var counts: [String: Int] = [:]
             var travel = 0.0
@@ -209,13 +207,13 @@ enum Diagnostics {
             var s = stats[pose] ?? Stats()
             s.frames += 1
             if snapshot.isTouching { s.pinchFrames += 1 }
-            if snapshot.isScrolling { s.threeFrames += 1 }
+            if snapshot.isScrolling { s.scrollFrames += 1 }
             if !snapshot.controlOn { s.offFrames += 1 }
             if snapshot.toggled { s.counts["toggle", default: 0] += 1 }
             for o in outputs {
                 switch o {
                 case .touchBegan where snapshot.isTouching: s.counts["pinch", default: 0] += 1
-                case .scrollBegan: s.counts["three", default: 0] += 1
+                case .scrollBegan: s.counts["scroll", default: 0] += 1
                 case .click(let n): s.counts["click x\(n)", default: 0] += 1
                 case .pressBegan: s.counts["drag", default: 0] += 1
                 case .fling: s.counts["fling", default: 0] += 1
@@ -229,19 +227,20 @@ enum Diagnostics {
 
         func printReport() {
             guard !order.isEmpty else { return }
-            let wanted = ["touch": "pinch", "three": "three", "peace": "toggle"]
+            let wanted = ["touch": "pinch", "fist": "scroll", "fist-still": "scroll", "fist-roll-up": "scroll",
+                          "fist-roll-down": "scroll", "fist-move": "scroll", "peace": "toggle"]
             print("\nPer pose (after the first \(fmt(Calibration.settleSeconds)) s of each step; control turned back on at each step)")
-            print("  pose     want    frames  pinch held  three held  off   begins / clicks           pointer  scroll")
+            print("  pose            want    frames  pinch held  fist held  off   begins / clicks           pointer  scroll")
             for pose in order {
                 guard let s = stats[pose], s.frames > 0 else { continue }
                 let n = Double(s.frames)
                 let counts = s.counts.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: ", ")
                 print("  " + [
-                    pose.padding(toLength: 7, withPad: " ", startingAt: 0),
+                    pose.padding(toLength: 14, withPad: " ", startingAt: 0),
                     (wanted[pose] ?? "none").padding(toLength: 6, withPad: " ", startingAt: 0),
                     String(format: "%6d", s.frames),
                     String(format: "%9.0f %%", 100 * Double(s.pinchFrames) / n),
-                    String(format: "%9.0f %%", 100 * Double(s.threeFrames) / n),
+                    String(format: "%8.0f %%", 100 * Double(s.scrollFrames) / n),
                     String(format: "%3.0f %%", 100 * Double(s.offFrames) / n),
                     (counts.isEmpty ? "none" : counts).padding(toLength: 24, withPad: " ", startingAt: 0),
                     String(format: "%5.0f pt", s.travel),
@@ -264,12 +263,15 @@ enum Diagnostics {
         private var previousPalm: (p: Vec2, size: Double)?
         private var stillJitter: [Double] = []
         private var stillDrift = 0.0
+        private var stillScrollDrift = 0.0
         private var stillTime = 0.0
         private var previousStillTime: Double?
         /// Palm positions (hand units) over the last 0.5 s, to find still stretches.
         private var recent: [(t: Double, p: Vec2)] = []
         private var counts: [String: Int] = [:]
         private var travel = 0.0
+        private var travelX = 0.0
+        private var travelY = 0.0
         private var scrollTravel = 0.0
         private var chirality: [String: Int] = [:]
         private var ignoredFrames = 0
@@ -307,7 +309,7 @@ enum Diagnostics {
             for output in r.outputs {
                 switch output {
                 case .touchBegan: print(stamp + "pinch down (\(tips))")
-                case .scrollBegan: print(stamp + "three-finger scroll down (\(tips))")
+                case .scrollBegan: print(stamp + "fist scroll down")
                 case let .click(count): print(stamp + "click ×\(count)")
                 case .pressBegan: print(stamp + "press (drag)")
                 case .touchEnded: print(stamp + "pinch up (\(tips))")
@@ -331,9 +333,12 @@ enum Diagnostics {
                 case .click(let n): counts["click x\(n)", default: 0] += 1
                 case .pressBegan: counts["press (drag)", default: 0] += 1
                 case .fling: counts["fling", default: 0] += 1
-                case let .pointerMoved(dx, dy): travel += (dx * dx + dy * dy).squareRoot()
+                case let .pointerMoved(dx, dy):
+                    travel += (dx * dx + dy * dy).squareRoot()
+                    travelX += abs(dx)
+                    travelY += abs(dy)
                 case .touchEnded: break
-                case .scrollBegan: counts["three-finger scroll", default: 0] += 1
+                case .scrollBegan: counts["fist scroll", default: 0] += 1
                 case let .scrolled(dx, dy): scrollTravel += (dx * dx + dy * dy).squareRoot()
                 case let .scrollEnded(vx, vy): if vx != 0 || vy != 0 { counts["scroll glide", default: 0] += 1 }
                 }
@@ -359,6 +364,7 @@ enum Diagnostics {
                 }
                 if still, let pt = previousStillTime, dt > 0, dt < 0.2 {
                     stillDrift += r.snapshot.potentialDelta.length
+                    stillScrollDrift += r.snapshot.potentialScroll.length
                     stillTime += r.time - pt
                 }
                 previousStillTime = still ? r.time : nil
@@ -401,12 +407,12 @@ enum Diagnostics {
             print("Thumb–index       p5 \(fmt(percentile(pinchRatios, 0.05), 3)), median \(fmt(percentile(pinchRatios, 0.5), 3)), p95 \(fmt(percentile(pinchRatios, 0.95), 3)) hand sizes  (touch < \(fmt(th.pinchEnter, 2)), release > \(fmt(th.pinchExit, 2)))")
             print("Palm jitter       \(fmt(average(stillJitter) * 1000, 2)) mhu per frame while still")
             if stillTime > 0.5 {
-                print("Still-hand drift  \(fmt(stillDrift / stillTime, 2)) pt/s if pinched (over \(fmt(stillTime)) s of still hand; target < 1)")
+                print("Still-hand drift  \(fmt(stillDrift / stillTime, 2)) pt/s if pinched, \(fmt(stillScrollDrift / stillTime, 2)) pt/s of scroll if a fist (over \(fmt(stillTime)) s of still hand; target < 1)")
             } else {
                 print("Still-hand drift  – (hold the hand still for a few seconds to measure)")
             }
             let gestures = counts.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: ", ")
-            print("Gestures          \(gestures.isEmpty ? "none" : gestures); pointer travel \(fmt(travel, 0)) pt, scroll travel \(fmt(scrollTravel, 0)) pt")
+            print("Gestures          \(gestures.isEmpty ? "none" : gestures); pointer travel \(fmt(travel, 0)) pt (x \(fmt(travelX, 0)), y \(fmt(travelY, 0))), scroll travel \(fmt(scrollTravel, 0)) pt")
             let share = { [handFrames] (n: Int) in fmt(100 * Double(n) / Double(max(1, handFrames)), 1) }
             print("Peace sign        \(share(peaceFrames)) % of hand frames (index and middle up, ring and little curled: \(share(vFrames)) %); longest still hold \(fmt(100 * maxToggleProgress, 0)) % of a toggle")
         }

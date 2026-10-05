@@ -67,8 +67,8 @@ final class FlingSequencerTests: XCTestCase {
         XCTAssertEqual(events.last?.phase, .began)
     }
 
-    /// A three-finger scroll: camera frames add distance every 1/30 s while the
-    /// sequencer ticks at 120 Hz, then the fingers lift with a release velocity.
+    /// A fist scroll: camera frames add distance every 1/30 s while the
+    /// sequencer ticks at 120 Hz, then the fist opens with a release velocity.
     private func dragThenRelease(_ frames: Int, perFrame: Vec2, velocity: Vec2) -> (drag: [ScrollEvent], after: [ScrollEvent]) {
         var s = FlingSequencer()
         var drag = s.beginDrag()

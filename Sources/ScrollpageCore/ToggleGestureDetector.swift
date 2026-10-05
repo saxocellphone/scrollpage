@@ -27,8 +27,8 @@ public struct PeaceSignThresholds: Equatable, Sendable {
     /// one held beside the hand 0.5 to 0.8, one stretched out about 1.
     public var thumbNearEnter = 0.45
     public var thumbNearExit = 0.55
-    /// Thumb tip to the index and middle tips: about 0.1 while they touch (a
-    /// three-finger scroll), about 1 with the thumb folded under a V.
+    /// Thumb tip to the index and middle tips: about 0.1 while they touch,
+    /// about 1 with the thumb folded under a V.
     public var thumbApartEnter = 0.40
     public var thumbApartExit = 0.33
     /// How far the thumb tip lies across the palm from the index knuckle,
@@ -125,8 +125,8 @@ public struct ToggleGestureConfig: Equatable, Sendable {
 ///
 /// Index and middle must be extended (with the `FingerExtensionTracker`'s
 /// hysteresis) and spread in a V, ring and little curled, and the thumb folded
-/// over them, away from the two raised tips, so neither a three-finger scroll,
-/// an OK sign nor an open hand can pass for it. It is reported once per hold,
+/// over them, away from the two raised tips, so neither three tips together,
+/// a fist, an OK sign nor an open hand can pass for it. It is reported once per hold,
 /// and only from a fresh entry into the pose.
 public struct ToggleGestureDetector: Sendable {
     public var config: ToggleGestureConfig

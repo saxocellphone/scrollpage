@@ -89,7 +89,7 @@ final class OKSignPinchTests: XCTestCase {
             assertNothing(pinchAndMove(seed: seed) { $0.folded = [.ringMCP, .littleMCP] }, "ring and little curled, seed \(seed)")
             assertNothing(pinchAndMove(seed: seed) { $0.folded = [.middleMCP] }, "middle curled, seed \(seed)")
             assertNothing(pinchAndMove(seed: seed) { $0.folded = [.littleMCP] }, "little curled, seed \(seed)")
-            assertNothing(pinchAndMove(seed: seed) { $0.fingersOpen = false }, "fist, seed \(seed)")
+            assertNothing(pinchAndMove(seed: seed) { $0.fingersOpen = false }, "fist with the thumb on the index tip, seed \(seed)")
             assertNothing(pinchAndMove(seed: seed) { $0.curl = curled(0.9) }, "half-closed past tolerance, seed \(seed)")
         }
     }
@@ -101,29 +101,6 @@ final class OKSignPinchTests: XCTestCase {
             XCTAssertGreaterThan(rig.pointerTravel().net.x, 50, "seed \(seed)")
             XCTAssertEqual(rig.count(.touchEnded), 1, "seed \(seed)")
         }
-    }
-
-    func testThreeFingerScrollsAndDoesNotPoint() {
-        let rig = Rig.webcam(fps: 30)
-        rig.hold(0.6)
-        rig.threeFinger(true, over: 0.08)
-        rig.hold(0.1)
-        rig.move(by: Vec2(0, 1.0 * rig.pose.size), over: 0.5)
-        XCTAssertEqual(rig.count(.scrollBegan), 1)
-        XCTAssertGreaterThan(rig.scrollTravel.y, 100)
-        XCTAssertEqual(rig.count(.touchBegan), 0)
-        XCTAssertEqual(rig.pointerTravel().path, 0)
-    }
-
-    func testThreeFingerWithRingAndLittleCurledDoesNothing() {
-        let rig = Rig.webcam(fps: 30)
-        rig.pose.folded = [.ringMCP, .littleMCP]
-        rig.hold(0.6)
-        rig.threeFinger(true, over: 0.08)
-        rig.hold(0.1)
-        rig.move(by: Vec2(0, 1.0 * rig.pose.size), over: 0.5)
-        assertNothing(rig, "ring and little curled")
-        XCTAssertTrue(rig.scrolls.isEmpty)
     }
 
     /// A finger wobbling across one tolerance never starts or stops a touch. The

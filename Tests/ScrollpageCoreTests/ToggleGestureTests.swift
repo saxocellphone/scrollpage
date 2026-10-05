@@ -22,8 +22,8 @@ private let nearMisses: [(String, HandPose)] = [
     ("raised palm, fingers spread", shaped(HandPose()) { $0.spread = true }),
     ("fist", shaped(HandPose()) { $0.fingersOpen = false; $0.thumbTucked = true }),
     ("OK pinch", shaped(HandPose()) { $0.pinchRatio = Rig.touching }),
-    ("three-finger touch", shaped(HandPose()) { $0.pinchRatio = Rig.touching; $0.middleTouch = Rig.touching }),
-    ("three-finger touch, ring and little curled",
+    ("thumb, index and middle touching", shaped(HandPose()) { $0.pinchRatio = Rig.touching; $0.middleTouch = Rig.touching }),
+    ("thumb on the curled middle finger",
      shaped(HandPose()) { $0.pinchRatio = Rig.touching; $0.middleTouch = Rig.touching; $0.folded = [.ringMCP, .littleMCP] }),
     ("V with the fingertips out of view", shaped { $0.hidden = [.indexTip, .middleTip] }),
 ]
@@ -256,11 +256,11 @@ final class ToggleGestureTests: XCTestCase {
     func testNoToggleDuringAScrollUntilRelease() {
         let rig = Rig()
         rig.hold(0.5)
-        rig.threeFinger(true)
+        rig.fist(true)
+        rig.hold(0.1)
         rig.move(by: Vec2(0, 0.3 * hu), over: 0.3)
         XCTAssertTrue(rig.engine.snapshot.isScrolling)
-        rig.pose.pinchRatio = 0.8
-        rig.pose.middleTouch = nil
+        rig.pose.fingersOpen = true
         rig.peaceSign(true)
         rig.hold(2.0)
         XCTAssertEqual(rig.count(.scrollBegan), 1)
@@ -426,9 +426,10 @@ final class ControlGatingTests: XCTestCase {
         rig.hold(0.5)
         rig.move(by: Vec2(0, -0.6 * hu), over: 0.12)
         rig.hold(0.5)
-        rig.threeFinger(true)
+        rig.fist(true)
+        rig.hold(0.1)
         rig.move(by: Vec2(0, 0.6 * hu), over: 0.4)
-        rig.threeFinger(false)
+        rig.fist(false)
         rig.hold(0.5)
         rig.pose.spread = true
         rig.hold(2.0)

@@ -29,11 +29,14 @@ public struct WristRotationConfig: Equatable, Sendable {
 
 /// Follows the hand's angle from the wrist to the index and middle knuckles.
 ///
-/// Yaw is that vector's angle in the image; pitch is its length against a slow
-/// reference, which shrinks as the hand tips toward or away from the camera.
-/// Both become pointer motion at `lever` hand units per radian: yaw turning
-/// clockwise on screen moves the pointer right, the hand lengthening (the
-/// knuckles rising away from the wrist) moves it up.
+/// Yaw is that vector's angle in the image, and becomes horizontal pointer
+/// motion at `lever` hand units per radian: turning clockwise on screen moves
+/// the pointer right. Pitch is its length against a slow reference, which
+/// shrinks as the hand tips toward or away from the camera, whichever way it
+/// tips. So the engine never moves the pointer with it (`pitchMotion`;
+/// vertical turning comes from `ForearmTwist`); it stays in the returned
+/// motion only because the engine's speed estimate, and so the horizontal
+/// gain, was calibrated with it.
 ///
 /// The palm already moves when the hand turns about the wrist, so the part of
 /// the palm's motion the turn accounts for is taken back out: what is left is
@@ -43,6 +46,12 @@ public struct WristRotation: Sendable {
     public var config: WristRotationConfig
     /// Smooths the wrist-to-knuckle vector before its angle is taken.
     public var filter = OneEuroFilter2D(minCutoff: 0.5, beta: 1)
+
+    /// This frame's turn in radians, clockwise on screen, after the rest fade.
+    public private(set) var yaw = 0.0
+    /// The vertical motion (hand units, y-down) pitch adds to `update`'s
+    /// result this frame, for the engine to leave out of the pointer.
+    public private(set) var pitchMotion = 0.0
 
     private var previous: (u: Vec2, angle: Double, length: Double)?
     private var reference: Double?
@@ -63,6 +72,8 @@ public struct WristRotation: Sendable {
 
     /// Pointer motion in hand units to add to the palm's motion this frame.
     public mutating func update(_ hand: HandSample, handSize: Double, at t: Double) -> Vec2 {
+        yaw = 0
+        pitchMotion = 0
         let c = config.minConfidence
         guard handSize > 0,
               let wrist = hand.location(.wrist, minConfidence: c),
@@ -89,17 +100,21 @@ public struct WristRotation: Sendable {
         defer { previous = (u, angle, length) }
         guard let p = previous, let first = history.first, t > first.t else { return .zero }
 
-        let yaw = remainder(angle - p.angle, 2 * .pi)
+        let turn = remainder(angle - p.angle, 2 * .pi)
         let pitch = length - p.length
-        guard abs(yaw) <= config.maxStep, abs(pitch) <= config.maxStep else { return .zero }
+        guard abs(turn) <= config.maxStep, abs(pitch) <= config.maxStep else { return .zero }
         let rate = u.distance(to: first.u) / (t - first.t)
         guard rate > config.restRate else { return .zero }
         let weight = smoothstep(config.restRate, config.fullRate, rate)
-        return (Vec2(yaw, -pitch) * config.lever - (u - p.u) * (ref / handSize)) * weight
+        yaw = turn * weight
+        pitchMotion = -pitch * config.lever * weight
+        return (Vec2(turn, -pitch) * config.lever - (u - p.u) * (ref / handSize)) * weight
     }
 
     /// The knuckles or wrist can't be seen: start over when they can.
     private mutating func lose() {
+        yaw = 0
+        pitchMotion = 0
         previous = nil
         history.removeAll()
         filter.reset()

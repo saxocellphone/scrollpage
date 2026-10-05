@@ -55,11 +55,22 @@ struct HandPose: Equatable {
     /// Apparent length of the hand along its axis, from the wrist, as when it
     /// tips toward or away from the camera: 1 is facing it.
     var foreshortening = 1.0
+    /// Apparent width of the palm across the knuckles, as when the forearm
+    /// rolls: 1 gives a width ratio of 0.6, rolling palm up narrows it.
+    var palmWidth = 1.0
     /// Vision's label for the hand.
     var chirality: Chirality? = .right
     /// When set, the middle finger curls to the thumb and index tips: its tip
     /// sits this far (hand sizes) from the point midway between them.
     var middleTouch: Double?
+
+    /// All four fingers curled into the palm, the thumb folded across them.
+    static var fist: HandPose {
+        var pose = HandPose()
+        pose.fingersOpen = false
+        pose.thumbTucked = true
+        return pose
+    }
 
     /// The control toggle pose: index and middle up in a V, ring and little
     /// curled, the thumb folded over them.
@@ -71,6 +82,8 @@ struct HandPose: Equatable {
         return pose
     }
 }
+
+func minimumJerk(_ p: Double) -> Double { p * p * p * (10 - 15 * p + 6 * p * p) }
 
 /// Builds plausible 21-joint hands for a given pose, with per-joint noise.
 struct SyntheticHand {
@@ -95,7 +108,7 @@ struct SyntheticHand {
         var joints: [HandJoint: Vec2] = [:]
 
         let mcps: [(HandJoint, Double)] = [(.indexMCP, -0.3), (.middleMCP, -0.1), (.ringMCP, 0.1), (.littleMCP, 0.3)]
-        for (j, dx) in mcps { joints[j] = p + Vec2(dx * s, 0) }
+        for (j, dx) in mcps { joints[j] = p + Vec2(dx * s * pose.palmWidth, 0) }
         joints[.wrist] = joints[.middleMCP]! + Vec2(0, s)
 
         let fan: [HandJoint: Double] = [.indexMCP: -12, .middleMCP: -4, .ringMCP: 4, .littleMCP: 12]
@@ -265,23 +278,33 @@ final class Rig {
     /// Fingertips touching, the median measured on the webcam.
     static let touching = 0.03
 
-    /// Brings thumb, index and middle tips together (or opens the hand).
-    func threeFinger(_ on: Bool, over duration: Double = 0.05) {
-        let from = pose.pinchRatio
-        let to = on ? Rig.touching : 0.8
+    /// Closes the hand into a fist (or opens it), the fingers moving together.
+    func fist(_ on: Bool, over duration: Double = 0.05) {
         run(duration) { p, pose in
-            pose.pinchRatio = from + (to - from) * p
-            pose.middleTouch = on ? (p >= 1 ? Rig.touching : 0.3 * (1 - p) + Rig.touching * p) : nil
+            let closed = on ? p >= 0.5 : p < 0.5
+            pose.fingersOpen = !closed
+            pose.thumbTucked = closed
+            pose.pinchRatio = 0.8
+        }
+    }
+
+    /// Minimum-jerk roll of the forearm: the hand turns `degrees` clockwise on
+    /// screen about the wrist (the fist's palm-up roll), its palm width
+    /// changing by `width`.
+    func roll(by degrees: Double, width: Double = 0, over duration: Double) {
+        let tilt = pose.tilt, from = pose.palmWidth
+        pose.pivotAtWrist = true
+        run(duration) { p, pose in
+            let s = minimumJerk(p)
+            pose.tilt = tilt + degrees * s
+            pose.palmWidth = from + width * s
         }
     }
 
     /// Minimum-jerk move of the palm by `delta` (image-height units).
     func move(by delta: Vec2, over duration: Double, dropped: ClosedRange<Int>? = nil) {
         let start = pose.palm
-        run(duration, dropped: dropped) { p, pose in
-            let s = p * p * p * (10 - 15 * p + 6 * p * p)
-            pose.palm = start + delta * s
-        }
+        run(duration, dropped: dropped) { p, pose in pose.palm = start + delta * minimumJerk(p) }
     }
 
     func clearOutputs() {

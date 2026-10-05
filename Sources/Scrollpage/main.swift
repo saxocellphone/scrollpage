@@ -8,6 +8,9 @@ if let index = arguments.firstIndex(of: "--calibrate-pinch") {
 if let index = arguments.firstIndex(of: "--calibrate-fist") {
     FistCalibration.run(arguments: Array(arguments[(index + 1)...]))
 }
+if let index = arguments.firstIndex(of: "--calibrate-twist") {
+    TwistCalibration.run(arguments: Array(arguments[(index + 1)...]))
+}
 if let index = arguments.firstIndex(of: "--diagnose") {
     Diagnostics.run(arguments: Array(arguments[(index + 1)...]))
 }

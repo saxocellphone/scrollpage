@@ -465,7 +465,7 @@ final class GestureEngineFlickTests: XCTestCase {
         XCTAssertEqual(rig.engine.flick.lastStroke?.verdict, .sweep)
         XCTAssertTrue(rig.flings.isEmpty)
 
-        rig.pose.fingersOpen = false
+        rig.pose.folded = [.middleMCP, .ringMCP, .littleMCP]
         rig.hold(0.3)
         let step = 0.6 * rig.pose.size / 3.6
         rig.run(0.12) { _, pose in pose.palm.y -= step }

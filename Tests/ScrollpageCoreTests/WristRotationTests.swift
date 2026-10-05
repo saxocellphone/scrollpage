@@ -1,7 +1,7 @@
 import XCTest
 @testable import ScrollpageCore
 
-private func minimumJerk(_ p: Double) -> Double { p * p * p * (10 - 15 * p + 6 * p * p) }
+
 
 final class WristRotationTests: XCTestCase {
     /// A webcam rig pinching with the hand still.
@@ -63,15 +63,25 @@ final class WristRotationTests: XCTestCase {
         XCTAssertGreaterThan(lean.x, 50, "a leaning hand turning right still goes right")
         XCTAssertLessThan(abs(lean.y), 0.5 * lean.x)
 
-        let up = pinched { $0.foreshortening = 0.8 }
-        tip(up, to: 1.0, over: 0.4)
-        let rise = up.pointerTravel().net
-        XCTAssertLessThan(rise.y, -50, "the knuckles rising from the wrist move the pointer up")
-        XCTAssertLessThan(abs(rise.x), 0.3 * abs(rise.y))
+    }
 
-        let down = pinched()
-        tip(down, to: 0.8, over: 0.4)
-        XCTAssertGreaterThan(down.pointerTravel().net.y, 50, "and falling, down")
+    /// Tipping the hand foreshortens the palm's length and so widens its
+    /// width ratio, but it isn't a roll: vertically it moves only as far as
+    /// the palm itself moves, as with the roll channel off.
+    func testTippingTheHandIsNotARoll() {
+        for seed in UInt64(1)...3 {
+            for (from, to, name) in [(0.8, 1.0, "knuckles rising"), (1.0, 0.8, "knuckles falling")] {
+                func travel(gain: Double) -> Vec2 {
+                    let rig = pinched(seed: seed) { $0.foreshortening = from }
+                    rig.engine.twist.config.gain = gain
+                    tip(rig, to: to, over: 0.4)
+                    return rig.pointerTravel().net
+                }
+                let with = travel(gain: ForearmTwistConfig().gain), without = travel(gain: 0)
+                XCTAssertEqual(with.y, without.y, accuracy: 10, "seed \(seed): \(name)")
+                XCTAssertLessThan(abs(with.y), 30, "seed \(seed): \(name)")
+            }
+        }
     }
 
     /// Turning at the wrist moves the knuckles as well as the angle; counting
@@ -133,14 +143,15 @@ final class WristRotationTests: XCTestCase {
         XCTAssertEqual(rig.count(.touchBegan), 0)
     }
 
-    func testTurningDoesNotScroll() {
+    func testTurningWithAFistScrollsAndNeverPoints() {
         let rig = Rig.webcam(fps: 30)
         rig.hold(0.6)
-        rig.threeFinger(true, over: 0.08)
+        rig.fist(true, over: 0.08)
         rig.hold(0.2)
+        rig.pose.pivotAtWrist = true
         turn(rig, by: 25, over: 0.4)
         XCTAssertEqual(rig.count(.scrollBegan), 1)
-        XCTAssertLessThan(rig.scrollTravel.length, 20)
+        XCTAssertGreaterThan(rig.scrollTravel.length, 50, "a fist's turn is its roll")
         XCTAssertEqual(rig.pointerTravel().path, 0)
     }
 

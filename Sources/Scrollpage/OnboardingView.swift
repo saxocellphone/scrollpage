@@ -45,7 +45,7 @@ struct OnboardingView: View {
                 TutorialCard(symbol: "cursorarrow.click", title: "Quick pinch to click",
                              detail: "Tap thumb and index without moving. Twice to double-click.", done: model.didClick)
                 TutorialCard(symbol: "hand.raised", title: "Scroll",
-                             detail: "Touch thumb, index and middle tips and move, or flick an open hand. Pinch to stop a glide.", done: model.didScroll)
+                             detail: "Make a fist and roll or move to scroll, or flick an open hand. Pinch or make a fist to stop a glide.", done: model.didScroll)
             }
 
             VStack(alignment: .leading, spacing: 6) {
@@ -203,9 +203,10 @@ private struct SkeletonView: View {
         }
         context.stroke(path, with: .color(.white.opacity(0.75 * alpha)), style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
 
-        let pose = hand.handSize.flatMap { TouchDetector().pose(TouchMeasure(hand, handSize: $0)) }
-        let tips: Set<HandJoint> = pose == .threeFinger ? [.thumbTip, .indexTip, .middleTip] : [.thumbTip, .indexTip]
-        let tipColor: Color = pose == .threeFinger ? .cyan : pose == .pinch ? .green : .yellow
+        let pinch = hand.handSize.map { TouchDetector().isPinch(TouchMeasure(hand, handSize: $0)) } ?? false
+        let fist = Finger.allCases.allSatisfy { hand.extensionReading($0) == .curled }
+        let tips: Set<HandJoint> = fist ? [.indexTip, .middleTip, .ringTip, .littleTip] : [.thumbTip, .indexTip]
+        let tipColor: Color = fist ? .cyan : pinch ? .green : .yellow
         for j in HandJoint.allCases {
             guard let p = point(j) else { continue }
             let tip = tips.contains(j)

@@ -84,13 +84,42 @@ final class HandSelectorTests: XCTestCase {
         XCTAssertNotNil(select([right], locked: true))
     }
 
-    func testSustainedFlipDropsTheHand() {
+    /// While a gesture is under way the label is ignored: an edge-on hand
+    /// rolling reads left for seconds at a time.
+    func testSustainedFlipKeepsALockedGesture() {
         var right = hand(.right, at: rightPalm)
         for _ in 0..<5 { select([right]) }
         right.chirality = .left
-        var kept = 0
-        for _ in 0..<30 { if select([right], locked: true) != nil { kept += 1 } }
-        XCTAssertEqual(Double(kept) / 30, HandSelectorConfig().flipGrace, accuracy: 1.5 / 30)
+        for i in 0..<90 {
+            right.palm.x += 0.002
+            XCTAssertNotNil(select([right], locked: true), "frame \(i)")
+        }
+        right.chirality = nil
+        for _ in 0..<10 { XCTAssertNotNil(select([right], locked: true), "unlabelled") }
+    }
+
+    func testAHandStillFlippedWhenTheGestureEndsIsDropped() {
+        var right = hand(.right, at: rightPalm)
+        for _ in 0..<5 { select([right]) }
+        right.chirality = .left
+        for _ in 0..<30 { select([right], locked: true) }
+        XCTAssertNil(select([right]), "unlocked, a left label drives nothing")
+        for _ in 0..<20 { select([right]) }
+        right.chirality = .right
+        XCTAssertNil(select([right]), "dropped after the grace: acquired afresh")
+        XCTAssertNil(select([right]))
+        XCTAssertNotNil(select([right]))
+    }
+
+    /// Locked, the hand is followed by continuity: a hand of another size, or
+    /// one that jumped, is not it.
+    func testALockedGestureFollowsContinuityNotLabels() {
+        let right = hand(.right, at: rightPalm)
+        for _ in 0..<5 { select([right]) }
+        let bigger = hand(.left, at: rightPalm + Vec2(0.01, 0), size: hu * 1.6)
+        XCTAssertNil(select([bigger], locked: true), "too different in size")
+        let far = hand(.left, at: rightPalm + Vec2(1.2 * hu, 0))
+        for _ in 0..<5 { XCTAssertNil(select([far], locked: true), "moved farther than a hand can") }
     }
 
     func testFlickerWithoutAGestureIsIgnoredButTheHandResumesAtOnce() {
@@ -140,9 +169,11 @@ final class RightHandOnlyTests: XCTestCase {
         rig.hold(0.05)
         rig.pinch(false)
         rig.hold(0.4)
-        rig.threeFinger(true)
+        rig.fist(true)
+        rig.hold(0.1)
         rig.move(by: Vec2(0, 0.5 * hu), over: 0.4)
-        rig.threeFinger(false)
+        rig.hold(0.2)
+        rig.fist(false)
         rig.hold(0.5)
         rig.move(by: Vec2(0, -0.6 * hu), over: 0.12)
         rig.hold(0.5)
@@ -212,7 +243,7 @@ final class RightHandOnlyTests: XCTestCase {
         XCTAssertEqual(rig.clicks, [1])
     }
 
-    func testSustainedFlipEndsADragWithoutAClick() {
+    func testSustainedFlipKeepsADrag() {
         let rig = Rig()
         rig.hold(0.5)
         rig.pinch(true)
@@ -220,22 +251,34 @@ final class RightHandOnlyTests: XCTestCase {
         rig.pose.chirality = .left
         let flippedAt = rig.t
         rig.move(by: Vec2(0.6 * hu, 0), over: 1.0)
-        XCTAssertEqual(rig.count(.touchEnded), 1)
-        let ended = rig.outputs.first { $0.output == .touchEnded }!.t
-        XCTAssertEqual(ended - flippedAt, HandSelectorConfig().flipGrace + GestureTiming().lostGrace, accuracy: 0.05)
-        XCTAssertEqual(rig.pointerTravel(since: ended).path, 0, "nothing moves after the hand is dropped")
+        XCTAssertEqual(rig.count(.touchEnded), 0)
+        XCTAssertGreaterThan(rig.pointerTravel(since: flippedAt).net.x, 100, "it keeps moving")
         rig.pinch(false)
         rig.hold(0.3)
+        XCTAssertEqual(rig.count(.touchEnded), 1)
         XCTAssertTrue(rig.clicks.isEmpty)
+        rig.pinch(true)
+        rig.hold(0.05)
+        rig.pinch(false)
+        rig.hold(0.3)
+        XCTAssertTrue(rig.clicks.isEmpty, "still labelled left: the next pinch doesn't count")
     }
 
-    func testSustainedFlipEndsAScrollWithoutAGlide() {
+    func testSustainedFlipKeepsAFistScroll() {
         let rig = Rig()
         rig.hold(0.5)
-        rig.threeFinger(true)
+        rig.fist(true)
+        rig.hold(0.1)
         rig.move(by: Vec2(0, 0.3 * hu), over: 0.3)
         rig.pose.chirality = .left
-        rig.move(by: Vec2(0, 0.6 * hu), over: 1.0)
-        XCTAssertEqual(rig.scrollEnds, [.zero])
+        let flippedAt = rig.t
+        rig.move(by: Vec2(0, 0.6 * hu), over: 0.5)
+        rig.hold(0.5)
+        XCTAssertTrue(rig.scrollEnds.isEmpty)
+        XCTAssertTrue(rig.engine.snapshot.isScrolling)
+        XCTAssertGreaterThan(abs(rig.outputs.filter { $0.t > flippedAt }.reduce(0.0) {
+            if case let .scrolled(_, dy) = $1.output { return $0 + dy }
+            return $0
+        }), 50)
     }
 }

@@ -13,7 +13,9 @@ import ScrollpageCore
 enum GuidedRecorder {
     static let countdown = 2.0
 
-    static func run(title: String, steps: [Calibration.Step], recordPath: String) -> Never {
+    /// `report` runs on the finished recording before the process exits.
+    static func run(title: String, steps: [Calibration.Step], recordPath: String,
+                    report: ((String) -> Void)? = nil) -> Never {
         setvbuf(stdout, nil, _IOLBF, 0)
         print(title)
         print("Recording to \(recordPath)")
@@ -21,7 +23,7 @@ enum GuidedRecorder {
 
         Diagnostics.withCamera {
             let pipeline = CameraPipeline()
-            let session = Session(steps: steps, recordPath: recordPath)
+            let session = Session(steps: steps, recordPath: recordPath, report: report)
             pipeline.onFrame = { session.add($0) }
             Diagnostics.startCamera(pipeline) {
                 pipeline.videoQueue.async { session.prompt() }
@@ -58,18 +60,22 @@ enum GuidedRecorder {
         }
 
         private let steps: [Calibration.Step]
-        private var index = 0
-        private var attempts: [Int]
+        private var progress: GuidedSteps
+        private var index: Int { progress.index }
         private var phase = Phase.idle
         private var startRequested = false
         private var frames: [Frame] = []
         private var tick = -1
         private var lastTime = 0.0
+        private let recordPath: String
         private let recorder: FileHandle?
+        private let report: ((String) -> Void)?
 
-        init(steps: [Calibration.Step], recordPath: String) {
+        init(steps: [Calibration.Step], recordPath: String, report: ((String) -> Void)?) {
             self.steps = steps
-            attempts = Array(repeating: 0, count: steps.count)
+            self.recordPath = recordPath
+            self.report = report
+            progress = GuidedSteps(count: steps.count)
             FileManager.default.createFile(atPath: recordPath, contents: nil)
             recorder = FileHandle(forWritingAtPath: recordPath)
         }
@@ -77,7 +83,7 @@ enum GuidedRecorder {
         func prompt() {
             if index < steps.count {
                 print("\n[\(index + 1)/\(steps.count)] \(steps[index].prompt)  (\(fmt(steps[index].seconds, 0)) s)"
-                    + (attempts[index] > 0 ? "  [redo, attempt \(attempts[index] + 1)]" : ""))
+                    + (progress.attempt > 1 ? "  [redo, attempt \(progress.attempt)]" : ""))
                 print("Press Enter to start (r = redo previous step, q = quit)")
             } else {
                 print("\nAll steps done. Press Enter to finish (r = redo previous step, q = quit)")
@@ -85,30 +91,30 @@ enum GuidedRecorder {
         }
 
         func command(_ line: String?) {
-            let cmd = line?.trimmingCharacters(in: .whitespaces).lowercased()
-            if cmd == nil || cmd == "q" {
-                if case .recording = phase { print("      stopped mid-step; its frames are kept, marked incomplete") }
-                if case .recording = phase { writeLine(["event": "incomplete", "label": steps[index].label, "attempt": attempts[index] + 1, "t": lastTime]) }
+            let command = GuidedCommand(line)
+            if command == .quit {
+                if case .recording = phase {
+                    print("      stopped mid-step; its frames are kept, marked incomplete")
+                    writeLine(["event": "incomplete", "label": steps[index].label, "attempt": progress.attempt, "t": lastTime])
+                }
                 finish()
             }
             guard case .idle = phase else {
                 print("      (recording; input ignored until the step ends)")
                 return
             }
-            if cmd == "r" {
-                guard index > 0 else {
+            if command == .redo {
+                guard let (step, superseded) = progress.redo() else {
                     print("      nothing to redo yet")
                     prompt()
                     return
                 }
-                index -= 1
-                attempts[index] += 1
-                writeLine(["event": "superseded", "label": steps[index].label, "attempt": attempts[index], "t": lastTime])
-                print("      redoing step \(index + 1); attempt \(attempts[index]) is superseded")
+                writeLine(["event": "superseded", "label": steps[step].label, "attempt": superseded, "t": lastTime])
+                print("      redoing step \(step + 1); attempt \(superseded) is superseded")
                 prompt()
                 return
             }
-            if index >= steps.count { finish() }
+            if progress.isDone { finish() }
             startRequested = true
         }
 
@@ -142,20 +148,20 @@ enum GuidedRecorder {
             case let .recording(start):
                 let step = steps[index]
                 line["label"] = step.label
-                line["attempt"] = attempts[index] + 1
+                line["attempt"] = progress.attempt
                 let left = Int((step.seconds - (t - start)).rounded(.up))
                 if left != tick && left > 0 {
                     tick = left
                     print("      \(left)")
                 }
-                let kind = hand.flatMap { h in h.handSize.map { TouchDetector().pose(TouchMeasure(h, handSize: $0)) } }
+                let pinch = hand.flatMap { h in h.handSize.map { TouchDetector().isPinch(TouchMeasure(h, handSize: $0)) } } ?? false
                 let curled = hand.map { h in Finger.allCases.allSatisfy { h.extensionReading($0) == .curled } } ?? false
                 frames.append(Frame(size: hand?.handSize, chirality: hand?.chirality?.rawValue ?? (hand == nil ? "none" : "unknown"),
-                                    pinch: kind == .pinch, fist: curled))
+                                    pinch: pinch, fist: curled))
                 if t - start >= step.seconds {
                     writeLine(line)
                     summarize()
-                    index += 1
+                    progress.advance()
                     phase = .idle
                     prompt()
                     return
@@ -178,6 +184,7 @@ enum GuidedRecorder {
         func finish() -> Never {
             recorder?.synchronizeFile()
             print("\nRecording finished (\(index) of \(steps.count) steps).")
+            report?(recordPath)
             exit(0)
         }
 
