@@ -66,8 +66,10 @@ around doesn't scroll.
 - **Scroll events** are posted like a real trackpad: pixel-precise, continuous,
   with scroll phases (began/ended) followed by momentum phases, so apps that
   care about momentum (Safari, Chrome, AppKit scroll views) treat them natively.
-- **Feedback.** A ring follows the pointer while the pinch is down, fills while
-  dragging and pulses on click. A small status pill at the top of the screen
+- **Feedback.** A thin ring centered on the pointer's hotspot while the pinch
+  is down: it fades in when the finger lands, contracts briefly on click, keeps
+  a faint fill while dragging and fades out on lift (opacity only with Reduce
+  Motion, solid with Increase Contrast). A small status pill at the top of the screen
   shows what changed and fades after 2 s.
 
 ## Build and run
@@ -131,6 +133,10 @@ drift the pointer if pinched, and which gestures fired. `--record` saves every
 frame's joints; `--replay` runs the engine over a recording, which is the way to
 tune thresholds against real hands. (When run from a terminal, macOS asks for
 camera access on behalf of the terminal app.)
+
+`--ring-demo [seconds]` cycles the touch ring through touch, click, drag and
+lift at the pointer; `--render-ring states.png [single.png]` renders the ring
+states offscreen over light and dark backgrounds.
 
 ## Project layout
 

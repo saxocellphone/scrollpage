@@ -289,7 +289,8 @@ final class AppModel: ObservableObject {
         let now = CACurrentMediaTime()
         let snapshot = report.snapshot
         if enabled {
-            ring.update(touching: snapshot.isTouching, pressed: snapshot.isPressed)
+            let clicked = report.outputs.contains { if case .click = $0 { return true } else { return false } }
+            ring.update(touching: snapshot.isTouching, pressed: snapshot.isPressed, clicked: clicked)
         } else {
             ring.hide()
         }
@@ -301,7 +302,6 @@ final class AppModel: ObservableObject {
                 if pointTravel > 250 { didPoint = true }
             case .click:
                 didClick = true
-                if enabled { ring.pulse() }
             case let .fling(vx, vy):
                 didScroll = true
                 if enabled { pill.show(.scroll(Self.arrow(vx: vx, vy: vy))) }
